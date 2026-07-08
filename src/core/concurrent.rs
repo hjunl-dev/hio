@@ -1,4 +1,6 @@
-mod thread_pool;
+pub(crate) mod array_bq;
+pub(crate) mod linked_bq;
+pub(crate) mod thread_pool;
 
 use crate::core::HioLastError;
 use std::{ffi::c_void, sync::Arc, thread};

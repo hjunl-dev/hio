@@ -10,8 +10,16 @@ use std::{cell::Cell, ffi::c_void, time::Instant};
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub enum HioLastError {
+    // Common 
     Success = 0,
     Failed = 1,
+    // 1000~
+    InvalidParam = 1000,
+    InvalidState = 1001,
+    InvalidOperation = 1002,
+    ResourceUnavailable = 1003,
+    Timeout = 1004,
+    MutexPoisoned = 1005,
 }
 
 thread_local! {
@@ -55,7 +63,7 @@ impl<'a> Drop for ScopedTimer<'a> {
 //
 
 // todo: need to fix align for different architectures, currently only works for x86_64
-#[repr(align(64))]
+#[repr(align(128))]
 pub struct CachePadded<T>(T);
 
 impl<T> CachePadded<T> {
