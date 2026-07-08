@@ -82,3 +82,9 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
         self.disposed.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
+
+impl<T: Send> Drop for ArrayBQ<T> {
+    fn drop(&mut self) {
+        todo!()
+    }
+}

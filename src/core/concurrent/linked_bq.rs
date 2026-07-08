@@ -135,5 +135,11 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
     }
 }
 
+impl<T: Send> Drop for LinkedBQ<T> {
+    fn drop(&mut self) {
+        todo!()
+    }
+}
+
 unsafe impl<T: Send> Send for LinkedBQ<T> {}
 unsafe impl<T: Send> Sync for LinkedBQ<T> {}
