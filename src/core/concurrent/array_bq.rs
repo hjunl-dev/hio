@@ -1,6 +1,9 @@
 use std::{
     collections::VecDeque,
-    sync::{Condvar, Mutex, atomic::AtomicBool},
+    sync::{
+        Condvar, Mutex, MutexGuard,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 use crate::core::{HioLastError, concurrent::BQ};
@@ -48,30 +51,89 @@ impl<T: Send> ArrayBQ<T> {
         }
     }
 
-    fn en_q(&self, item: T) -> Result<(), HioLastError> {
-        todo!()
+    fn en_q(&self, item: T, mut g: MutexGuard<'_, Inner<T>>) {
+        let prev_count = g.buf.len();
+        g.buf.push_back(item);
+
+        // cascade notify push waiters if queue is not full
+        if prev_count + 1 < self.capacity && g.push_waiters > 0 {
+            self.not_full.notify_one();
+        }
+        // was empty, notify pop waiters
+        if prev_count == 0 && g.pop_waiters > 0 {
+            self.not_empty.notify_one();
+        }
     }
 
-    fn de_q(&self) -> Result<T, HioLastError> {
-        todo!()
+    fn de_q(&self, mut g: MutexGuard<'_, Inner<T>>) -> Result<T, HioLastError> {
+        let prev_count = g.buf.len();
+        let item = g.buf.pop_front();
+
+        // This should not happen, as we only call de_q when the queue is not empty.
+        if item.is_none() {
+            return Err(HioLastError::InvalidState);
+        }
+        // cascade notify pop waiters if queue is not empty
+        if prev_count - 1 > 0 && g.pop_waiters > 0 {
+            self.not_empty.notify_one();
+        }
+        // was full, notify push waiters
+        if prev_count == self.capacity && g.push_waiters > 0 {
+            self.not_full.notify_one();
+        }
+        Ok(item.unwrap())
     }
 }
 
 impl<T: Send> BQ<T> for ArrayBQ<T> {
     fn push(&self, item: T) -> Result<(), HioLastError> {
-        todo!()
+        if let Ok(mut g) = self.inner.lock() {
+            g.push_waiters += 1;
+            if let Ok(mut g) = self
+                .not_full
+                .wait_while(g, |g| !self.is_disposed() && g.buf.len() >= self.capacity)
+            {
+                g.push_waiters -= 1;
+                if self.is_disposed() {
+                    return Err(HioLastError::ResourceUnavailable);
+                }
+                self.en_q(item, g);
+                return Ok(());
+            }
+        }
+        Err(HioLastError::MutexPoisoned)
     }
 
     fn pop(&self) -> Result<T, HioLastError> {
-        todo!()
+        if let Ok(mut g) = self.inner.lock() {
+            g.pop_waiters += 1;
+            if let Ok(mut g) = self
+                .not_empty
+                .wait_while(g, |g| !self.is_disposed() && g.buf.is_empty())
+            {
+                g.pop_waiters -= 1;
+                if self.is_disposed() {
+                    return Err(HioLastError::ResourceUnavailable);
+                }
+                return self.de_q(g);
+            }
+        }
+        Err(HioLastError::MutexPoisoned)
     }
 
     fn dispose(&self) {
-        todo!()
+        if self
+            .disposed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.not_empty.notify_all();
+            self.not_full.notify_all();
+        }
     }
 
     fn size(&self) -> usize {
-        todo!()
+        self.inner.lock().map(|g| g.buf.len()).unwrap_or(0)
     }
 
     fn capacity(&self) -> usize {
@@ -79,12 +141,12 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
     }
 
     fn is_disposed(&self) -> bool {
-        self.disposed.load(std::sync::atomic::Ordering::SeqCst)
+        self.disposed.load(Ordering::Acquire)
     }
 }
 
 impl<T: Send> Drop for ArrayBQ<T> {
     fn drop(&mut self) {
-        todo!()
+        self.dispose();
     }
 }
