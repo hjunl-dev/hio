@@ -59,7 +59,7 @@ pub type CJobFnPtr = extern "C" fn(user_data: *const c_void);
 pub type JobQueue = Arc<dyn BQ<Job>>;
 
 pub trait Executor: Send + Sync {
-    fn submit(&self, job: Job);
+    fn submit(&self, job: Job) -> Result<(), HioLastError>;
     fn dispose(&mut self);
     fn is_disposed(&self) -> bool;
     fn worker_count(&self) -> usize;

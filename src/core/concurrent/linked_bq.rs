@@ -1,7 +1,7 @@
 use std::{
     cell::UnsafeCell,
     sync::{
-        Condvar, Mutex,
+        Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -32,13 +32,13 @@ impl<T> Node<T> {
     }
 }
 
-struct HeadSide<T> {
+struct PopSide<T> {
     head_lock: Mutex<()>,
     not_empty: Condvar,
     head: UnsafeCell<*mut Node<T>>,
 }
 
-struct TailSide<T> {
+struct PushSide<T> {
     tail_lock: Mutex<()>,
     not_full: Condvar,
     tail: UnsafeCell<*mut Node<T>>,
@@ -52,8 +52,8 @@ pub struct LinkedBQ<T: Send> {
     capacity: usize,
     count: CachePadded<AtomicUsize>,
     disposed: CachePadded<AtomicBool>,
-    head_side: CachePadded<HeadSide<T>>,
-    tail_side: CachePadded<TailSide<T>>,
+    pop_side: CachePadded<PopSide<T>>,   // head
+    push_side: CachePadded<PushSide<T>>, // tail
 }
 
 impl<T: Send> LinkedBQ<T> {
@@ -63,12 +63,12 @@ impl<T: Send> LinkedBQ<T> {
             capacity,
             count: CachePadded(AtomicUsize::new(0)),
             disposed: CachePadded(AtomicBool::new(false)),
-            head_side: CachePadded(HeadSide {
+            pop_side: CachePadded(PopSide {
                 head_lock: Mutex::new(()),
                 not_empty: Condvar::new(),
                 head: UnsafeCell::new(dummy_ptr),
             }),
-            tail_side: CachePadded(TailSide {
+            push_side: CachePadded(PushSide {
                 tail_lock: Mutex::new(()),
                 not_full: Condvar::new(),
                 tail: UnsafeCell::new(dummy_ptr),
@@ -76,8 +76,8 @@ impl<T: Send> LinkedBQ<T> {
         }
     }
 
-    unsafe fn en_q(&self, item: Box<Node<T>>) {
-        let pp_old_tail = self.tail_side.tail.get();
+    unsafe fn en_q(&self, item: Box<Node<T>>, tail_lock_g: MutexGuard<'_, ()>) {
+        let pp_old_tail = self.push_side.tail.get();
         let p_new_tail = Box::into_raw(item);
 
         unsafe {
@@ -86,11 +86,27 @@ impl<T: Send> LinkedBQ<T> {
             // Update the tail pointer to point to the new node
             (*pp_old_tail) = p_new_tail;
         }
+
+        let prev_count = self.count.fetch_add(1, Ordering::Release);
+        // cascade notify push waiters if queue is not full
+        if prev_count + 1 < self.capacity {
+            self.push_side.not_full.notify_one();
+        }
+        // was empty (empty -> 1), notify pop waiters);
+        drop(tail_lock_g);
+        if prev_count == 0 {
+            let _g = self
+                .pop_side
+                .head_lock
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            self.pop_side.not_empty.notify_one();
+        }
     }
 
-    unsafe fn de_q(&self) -> Result<T, HioLastError> {
-        let pp_old_head = self.head_side.head.get();
-
+    unsafe fn de_q(&self, head_lock_g: MutexGuard<'_, ()>) -> Result<T, HioLastError> {
+        let pp_old_head = self.pop_side.head.get();
+        let item: T;
         unsafe {
             let p_new_head = (**pp_old_head).next;
             if p_new_head.is_null() {
@@ -98,8 +114,8 @@ impl<T: Send> LinkedBQ<T> {
                 return Err(HioLastError::InvalidOperation);
             }
 
-            let item = (*p_new_head).item.take();
-            if item.is_none() {
+            let tmp = (*p_new_head).item.take();
+            if tmp.is_none() {
                 // This should not happen, as the new head should always have an item
                 return Err(HioLastError::InvalidState);
             }
@@ -107,8 +123,25 @@ impl<T: Send> LinkedBQ<T> {
             drop(Box::from_raw(*pp_old_head));
             // Update the head pointer to point to the new head
             (*pp_old_head) = p_new_head;
-            Ok(item.unwrap())
+            item = tmp.unwrap();
         }
+
+        let prev_count = self.count.fetch_sub(1, Ordering::Release);
+        // cascade notify push waiters if queue is not full
+        if prev_count > 1 {
+            self.pop_side.not_empty.notify_one();
+        }
+        // was full (full -> not full), notify push waiters
+        drop(head_lock_g);
+        if prev_count == self.capacity {
+            let _g = self
+                .push_side
+                .tail_lock
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            self.push_side.not_full.notify_one();
+        }
+        Ok(item)
     }
 
     #[inline]
@@ -124,9 +157,9 @@ impl<T: Send> LinkedBQ<T> {
 
 impl<T: Send> BQ<T> for LinkedBQ<T> {
     fn push(&self, item: T) -> Result<(), HioLastError> {
-        if let Ok(g) = self.tail_side.tail_lock.lock() {
+        if let Ok(g) = self.push_side.tail_lock.lock() {
             if let Ok(g) = self
-                .tail_side
+                .push_side
                 .not_full
                 .wait_while(g, |_g| !self.is_disposed() && self.is_full())
             {
@@ -134,7 +167,7 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
                     return Err(HioLastError::ResourceUnavailable);
                 }
                 unsafe {
-                    self.en_q(Node::new(Some(item)));
+                    self.en_q(Node::new(Some(item)), g);
                 }
                 return Ok(());
             }
@@ -143,9 +176,9 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
     }
 
     fn pop(&self) -> Result<T, HioLastError> {
-        if let Ok(g) = self.head_side.head_lock.lock() {
+        if let Ok(g) = self.pop_side.head_lock.lock() {
             if let Ok(g) = self
-                .head_side
+                .pop_side
                 .not_empty
                 .wait_while(g, |_g| !self.is_disposed() && self.is_empty())
             {
@@ -153,7 +186,7 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
                     return Err(HioLastError::ResourceUnavailable);
                 }
                 unsafe {
-                    return self.de_q();
+                    return self.de_q(g);
                 }
             }
         }
@@ -168,19 +201,19 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
         {
             {
                 let _g = self
-                    .head_side
+                    .pop_side
                     .head_lock
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
-                self.head_side.not_empty.notify_all();
+                self.pop_side.not_empty.notify_all();
             }
             {
                 let _g = self
-                    .tail_side
+                    .push_side
                     .tail_lock
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
-                self.tail_side.not_full.notify_all();
+                self.push_side.not_full.notify_all();
             }
         }
     }
@@ -200,7 +233,13 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
 
 impl<T: Send> Drop for LinkedBQ<T> {
     fn drop(&mut self) {
-        self.dispose();
+        let mut current = unsafe { *self.pop_side.head.get() };
+        while !current.is_null() {
+            unsafe {
+                let tmp = Box::from_raw(current);
+                current = tmp.next;
+            }
+        }
     }
 }
 

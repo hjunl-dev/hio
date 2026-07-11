@@ -6,7 +6,10 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::core::concurrent::{BQ, Executor, Job, JobQueue, linked_bq::LinkedBQ};
+use crate::{
+    core::concurrent::{BQ, BQType, Executor, Job, JobQueue, create_bq, linked_bq::LinkedBQ},
+    error::HioLastError,
+};
 
 pub struct ThreadPool {
     num_workers: usize,
@@ -28,7 +31,7 @@ impl ThreadPool {
         for _ in 0..num_workers {
             let jq_clone = Arc::clone(&pool.job_queue);
             pool.workers.push(thread::spawn(move || {
-                worker_thread_proc(&(*jq_clone));
+                ThreadPool::worker_thread_proc(&(*jq_clone));
             }));
         }
         pool
@@ -36,14 +39,20 @@ impl ThreadPool {
 
     pub fn new(num_workers: usize) -> Self {
         // Create a default job queue (LinkedBQ) with unlimited capacity (0)
-        let jq = Arc::new(LinkedBQ::new(0));
+        let jq = create_bq(BQType::Linked, 0);
         Self::with_jq(jq, num_workers)
+    }
+
+    fn worker_thread_proc(jq_ref: &dyn BQ<Job>) {
+        while let Ok(job) = jq_ref.pop() {
+            job();
+        }
     }
 }
 
 impl Executor for ThreadPool {
-    fn submit(&self, job: Job) {
-        todo!()
+    fn submit(&self, job: Job) -> Result<(), HioLastError> {
+        self.job_queue.push(job)
     }
 
     fn worker_count(&self) -> usize {
@@ -74,8 +83,62 @@ impl Drop for ThreadPool {
     }
 }
 
-fn worker_thread_proc(jq_ref: &dyn BQ<Job>) {
-    while let Ok(job) = jq_ref.pop() {
-        job();
+//
+// Tests for the ThreadPool implementation
+//
+
+mod tests {
+    use crate::core::ScopedTimer;
+    use crate::core::concurrent::{BQType, create_bq};
+
+    use super::*;
+    use std::sync::atomic::AtomicI32;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    #[test]
+    fn test_thread_pool_with_array_bq() {
+        let counter = Arc::new(AtomicI32::new(0));
+        let repeat = 1_000_000;
+
+        {
+            let jq = create_bq::<Job>(BQType::Array, 0);
+            let pool = ThreadPool::with_jq(jq, 4);
+            let _timer = ScopedTimer::new("test_thread_pool_with_array_bq");
+
+            for _ in 0..repeat {
+                let counter_clone = Arc::clone(&counter);
+                let _ = pool.submit(Box::new(move || {
+                    counter_clone.fetch_add(1, Ordering::SeqCst);
+                }));
+            }
+        }
+
+        let result = counter.load(Ordering::SeqCst);
+        println!("Counter value: {}", result);
+        assert_eq!(result, repeat);
+    }
+
+    #[test]
+    fn test_thread_pool_with_linked_bq() {
+        let counter = Arc::new(AtomicI32::new(0));
+        let repeat = 1_000_000;
+
+        {
+            let jq = create_bq::<Job>(BQType::Linked, 0);
+            let pool = ThreadPool::with_jq(jq, 4);
+            let _timer = ScopedTimer::new("test_thread_pool_with_linked_bq");
+
+            for _ in 0..repeat {
+                let counter_clone = Arc::clone(&counter);
+                let _ = pool.submit(Box::new(move || {
+                    counter_clone.fetch_add(1, Ordering::SeqCst);
+                }));
+            }
+        }
+
+        let result = counter.load(Ordering::SeqCst);
+        println!("Counter value: {}", result);
+        assert_eq!(result, repeat);
     }
 }
