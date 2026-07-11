@@ -89,16 +89,23 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
     fn push(&self, item: T) -> Result<(), HioLastError> {
         if let Ok(mut g) = self.inner.lock() {
             g.push_waiters += 1;
-            if let Ok(mut g) = self
+
+            match self
                 .not_full
                 .wait_while(g, |g| !self.is_disposed() && g.buf.len() >= self.capacity)
             {
-                g.push_waiters -= 1;
-                if self.is_disposed() {
-                    return Err(HioLastError::ResourceUnavailable);
+                Ok(mut g) => {
+                    g.push_waiters -= 1;
+                    if self.is_disposed() {
+                        return Err(HioLastError::ResourceUnavailable);
+                    }
+                    self.en_q(item, g);
+                    return Ok(());
                 }
-                self.en_q(item, g);
-                return Ok(());
+                Err(e) => {
+                    e.into_inner().push_waiters -= 1;
+                    return Err(HioLastError::MutexPoisoned);
+                }
             }
         }
         Err(HioLastError::MutexPoisoned)
@@ -107,15 +114,22 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
     fn pop(&self) -> Result<T, HioLastError> {
         if let Ok(mut g) = self.inner.lock() {
             g.pop_waiters += 1;
-            if let Ok(mut g) = self
+
+            match self
                 .not_empty
                 .wait_while(g, |g| !self.is_disposed() && g.buf.is_empty())
             {
-                g.pop_waiters -= 1;
-                if self.is_disposed() {
-                    return Err(HioLastError::ResourceUnavailable);
+                Ok(mut g) => {
+                    g.pop_waiters -= 1;
+                    if self.is_disposed() {
+                        return Err(HioLastError::ResourceUnavailable);
+                    }
+                    return self.de_q(g);
                 }
-                return self.de_q(g);
+                Err(e) => {
+                    e.into_inner().pop_waiters -= 1;
+                    return Err(HioLastError::MutexPoisoned);
+                }
             }
         }
         Err(HioLastError::MutexPoisoned)
@@ -127,6 +141,7 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
         {
+            let _g = self.inner.lock();
             self.not_empty.notify_all();
             self.not_full.notify_all();
         }
@@ -139,7 +154,6 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
     fn capacity(&self) -> usize {
         self.capacity
     }
-
     fn is_disposed(&self) -> bool {
         self.disposed.load(Ordering::Acquire)
     }
