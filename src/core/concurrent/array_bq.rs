@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use crate::core::{HioLastError, concurrent::BQ};
+use crate::{core::concurrent::BQ, error::HioLastError};
 
 //
 // Primitive for building Array Blocking Queue

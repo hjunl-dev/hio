@@ -4,7 +4,7 @@
 
 use std::ffi::c_void;
 
-use crate::core::{self, HioLastError};
+use crate::error::{HioLastError, get_last_error};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hio_create_runtime() -> *const c_void {
@@ -18,7 +18,7 @@ pub extern "C" fn hio_destroy_runtime(_runtime: *const c_void) -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hio_get_last_error() -> HioLastError {
-    core::get_last_error()
+    get_last_error()
 }
 
 #[unsafe(no_mangle)]

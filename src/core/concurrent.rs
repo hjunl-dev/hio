@@ -2,9 +2,9 @@ pub(crate) mod array_bq;
 pub(crate) mod linked_bq;
 pub(crate) mod thread_pool;
 
-use crate::core::{
-    HioLastError,
-    concurrent::{linked_bq::LinkedBQ, thread_pool::ThreadPool},
+use crate::{
+    core::concurrent::{linked_bq::LinkedBQ, thread_pool::ThreadPool},
+    error::HioLastError,
 };
 use std::{ffi::c_void, sync::Arc, thread};
 

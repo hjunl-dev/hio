@@ -6,7 +6,10 @@ use std::{
     },
 };
 
-use crate::core::{CachePadded, HioLastError, concurrent::BQ};
+use crate::{
+    core::{CachePadded, concurrent::BQ},
+    error::HioLastError,
+};
 
 //
 // Primitive for building Linked Blocking Queue
