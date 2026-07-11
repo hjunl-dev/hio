@@ -19,7 +19,7 @@ struct Inner<T> {
 }
 
 //
-// Array Blocking Queue
+// ArrayBQ impl
 //
 
 pub struct ArrayBQ<T: Send> {

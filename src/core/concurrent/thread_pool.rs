@@ -1,5 +1,8 @@
 use std::{
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::{self, JoinHandle},
 };
 
@@ -7,28 +10,25 @@ use crate::core::concurrent::{BQ, Executor, Job, JobQueue, linked_bq::LinkedBQ};
 
 pub struct ThreadPool {
     num_workers: usize,
-    running: Arc<AtomicBool>,
+    disposed: AtomicBool,
     job_queue: JobQueue,
     workers: Vec<JoinHandle<()>>,
 }
 
 impl ThreadPool {
-    pub fn with_job_queue(job_queue: JobQueue, num_workers: usize) -> Self {
+    pub fn with_jq(job_queue: JobQueue, num_workers: usize) -> Self {
+        // Create a thread pool
         let mut pool = Self {
             num_workers,
-            running: Arc::new(AtomicBool::new(true)),
+            disposed: AtomicBool::new(false),
             job_queue,
             workers: Vec::with_capacity(num_workers),
         };
+        // Spawn worker threads
         for _ in 0..num_workers {
             let jq_clone = Arc::clone(&pool.job_queue);
-            let running_clone = Arc::clone(&pool.running);
             pool.workers.push(thread::spawn(move || {
-                while running_clone.load(std::sync::atomic::Ordering::SeqCst) {
-                    if let Ok(job) = jq_clone.pop() {
-                        job();
-                    }
-                }
+                worker_thread_proc(&(*jq_clone));
             }));
         }
         pool
@@ -36,8 +36,8 @@ impl ThreadPool {
 
     pub fn new(num_workers: usize) -> Self {
         // Create a default job queue (LinkedBQ) with unlimited capacity (0)
-        let task_queue = Arc::new(LinkedBQ::new(0));
-        Self::with_job_queue(task_queue, num_workers)
+        let jq = Arc::new(LinkedBQ::new(0));
+        Self::with_jq(jq, num_workers)
     }
 }
 
@@ -47,18 +47,35 @@ impl Executor for ThreadPool {
     }
 
     fn worker_count(&self) -> usize {
-        todo!()
+        self.num_workers
     }
 
-    fn shutdown(&self) {
-        todo!()
+    fn dispose(&mut self) {
+        if self
+            .disposed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.job_queue.dispose();
+            for worker in self.workers.drain(..) {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    fn is_disposed(&self) -> bool {
+        self.disposed.load(Ordering::Acquire)
     }
 }
 
 impl Drop for ThreadPool {
     fn drop(&mut self) {
-        todo!()
+        self.dispose();
     }
 }
 
-fn thread_proc() {}
+fn worker_thread_proc(jq_ref: &dyn BQ<Job>) {
+    while let Ok(job) = jq_ref.pop() {
+        job();
+    }
+}

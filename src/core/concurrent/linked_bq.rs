@@ -2,7 +2,7 @@ use std::{
     cell::UnsafeCell,
     sync::{
         Condvar, Mutex,
-        atomic::{AtomicBool, AtomicUsize},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -42,7 +42,7 @@ struct TailSide<T> {
 }
 
 //
-// Linked Blocking Queue
+// LinkedBQ impl
 //
 
 pub struct LinkedBQ<T: Send> {
@@ -107,37 +107,97 @@ impl<T: Send> LinkedBQ<T> {
             Ok(item.unwrap())
         }
     }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.count.load(Ordering::Acquire) == 0
+    }
+
+    #[inline]
+    fn is_full(&self) -> bool {
+        self.count.load(Ordering::Acquire) == self.capacity
+    }
 }
 
 impl<T: Send> BQ<T> for LinkedBQ<T> {
     fn push(&self, item: T) -> Result<(), HioLastError> {
-        todo!()
+        if let Ok(g) = self.tail_side.tail_lock.lock() {
+            if let Ok(g) = self
+                .tail_side
+                .not_full
+                .wait_while(g, |_g| !self.is_disposed() && self.is_full())
+            {
+                if self.is_disposed() {
+                    return Err(HioLastError::ResourceUnavailable);
+                }
+                unsafe {
+                    self.en_q(Node::new(Some(item)));
+                }
+                return Ok(());
+            }
+        }
+        Err(HioLastError::MutexPoisoned)
     }
 
     fn pop(&self) -> Result<T, HioLastError> {
-        todo!()
+        if let Ok(g) = self.head_side.head_lock.lock() {
+            if let Ok(g) = self
+                .head_side
+                .not_empty
+                .wait_while(g, |_g| !self.is_disposed() && self.is_empty())
+            {
+                if self.is_disposed() && self.is_empty() {
+                    return Err(HioLastError::ResourceUnavailable);
+                }
+                unsafe {
+                    return self.de_q();
+                }
+            }
+        }
+        Err(HioLastError::MutexPoisoned)
     }
 
     fn dispose(&self) {
-        todo!()
+        if self
+            .disposed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            {
+                let _g = self
+                    .head_side
+                    .head_lock
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                self.head_side.not_empty.notify_all();
+            }
+            {
+                let _g = self
+                    .tail_side
+                    .tail_lock
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                self.tail_side.not_full.notify_all();
+            }
+        }
     }
 
     fn size(&self) -> usize {
-        todo!()
+        self.count.load(Ordering::Acquire)
     }
 
     fn capacity(&self) -> usize {
-        todo!()
+        self.capacity
     }
 
     fn is_disposed(&self) -> bool {
-        todo!()
+        self.disposed.load(Ordering::Acquire)
     }
 }
 
 impl<T: Send> Drop for LinkedBQ<T> {
     fn drop(&mut self) {
-        todo!()
+        self.dispose();
     }
 }
 

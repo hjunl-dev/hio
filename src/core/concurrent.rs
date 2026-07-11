@@ -60,8 +60,9 @@ pub type JobQueue = Arc<dyn BQ<Job>>;
 
 pub trait Executor: Send + Sync {
     fn submit(&self, job: Job);
+    fn dispose(&mut self);
+    fn is_disposed(&self) -> bool;
     fn worker_count(&self) -> usize;
-    fn shutdown(&self);
 }
 
 fn ensure_num_workers(num_workers: usize) -> usize {
@@ -81,7 +82,7 @@ pub fn create_executor(
 ) -> Arc<dyn Executor> {
     let num_workers = ensure_num_workers(num_workers);
     match executor_type {
-        ExecutorType::ThreadPool => Arc::new(ThreadPool::with_job_queue(job_queue, num_workers)),
+        ExecutorType::ThreadPool => Arc::new(ThreadPool::with_jq(job_queue, num_workers)),
         ExecutorType::ThreadPerTask => todo!(),
         ExecutorType::WorkStealing => todo!(),
     }
