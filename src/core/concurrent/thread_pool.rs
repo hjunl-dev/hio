@@ -104,7 +104,7 @@ mod tests {
 
         {
             let jq = create_bq::<Job>(BQType::Array, 0);
-            let pool = create_executor(ExecutorType::ThreadPool, jq, 0);
+            let pool = create_executor(ExecutorType::ThreadPool, jq, 4);
             let _timer = ScopedTimer::new("test_thread_pool_with_array_bq");
 
             for _ in 0..repeat {

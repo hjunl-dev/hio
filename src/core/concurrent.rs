@@ -29,6 +29,26 @@ pub trait BQ<T: Send>: Send + Sync {
     fn is_disposed(&self) -> bool;
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct CondWaiters(usize);
+
+impl CondWaiters {
+    #[inline]
+    fn enter(&mut self) {
+        self.0 += 1;
+    }
+    #[inline]
+    fn leave(&mut self) {
+        if self.0 > 0 {
+            self.0 -= 1;
+        }
+    }
+    #[inline]
+    fn any(&self) -> bool {
+        self.0 > 0
+    }
+}
+
 fn ensure_capacity(capacity: usize) -> usize {
     if capacity == 0 { usize::MAX } else { capacity }
 }

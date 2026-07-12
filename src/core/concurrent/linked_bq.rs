@@ -7,7 +7,10 @@ use std::{
 };
 
 use crate::{
-    core::{CachePadded, concurrent::BQ},
+    core::{
+        CachePadded,
+        concurrent::{BQ, CondWaiters},
+    },
     error::HioLastError,
 };
 
@@ -33,13 +36,13 @@ impl<T> Node<T> {
 }
 
 struct PopSide<T> {
-    head_lock: Mutex<()>,
+    pop_lock: Mutex<CondWaiters>,
     not_empty: Condvar,
     head: UnsafeCell<*mut Node<T>>,
 }
 
 struct PushSide<T> {
-    tail_lock: Mutex<()>,
+    push_lock: Mutex<CondWaiters>,
     not_full: Condvar,
     tail: UnsafeCell<*mut Node<T>>,
 }
@@ -64,19 +67,19 @@ impl<T: Send> LinkedBQ<T> {
             count: CachePadded(AtomicUsize::new(0)),
             disposed: CachePadded(AtomicBool::new(false)),
             pop_side: CachePadded(PopSide {
-                head_lock: Mutex::new(()),
+                pop_lock: Mutex::new(CondWaiters::default()),
                 not_empty: Condvar::new(),
                 head: UnsafeCell::new(dummy_ptr),
             }),
             push_side: CachePadded(PushSide {
-                tail_lock: Mutex::new(()),
+                push_lock: Mutex::new(CondWaiters::default()),
                 not_full: Condvar::new(),
                 tail: UnsafeCell::new(dummy_ptr),
             }),
         }
     }
 
-    unsafe fn en_q(&self, item: Box<Node<T>>, tail_lock_g: MutexGuard<'_, ()>) {
+    unsafe fn en_q(&self, item: Box<Node<T>>, push_lock_g: MutexGuard<'_, CondWaiters>) {
         let pp_old_tail = self.push_side.tail.get();
         let p_new_tail = Box::into_raw(item);
 
@@ -89,22 +92,24 @@ impl<T: Send> LinkedBQ<T> {
 
         let prev_count = self.count.fetch_add(1, Ordering::Release);
         // cascade notify push waiters if queue is not full
-        if prev_count + 1 < self.capacity {
+        if prev_count + 1 < self.capacity && push_lock_g.any() {
             self.push_side.not_full.notify_one();
         }
         // was empty (empty -> 1), notify pop waiters);
-        drop(tail_lock_g);
+        drop(push_lock_g);
         if prev_count == 0 {
-            let _g = self
+            let pop_lock_g: MutexGuard<'_, CondWaiters> = self
                 .pop_side
-                .head_lock
+                .pop_lock
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            self.pop_side.not_empty.notify_one();
+            if pop_lock_g.any() {
+                self.pop_side.not_empty.notify_one();
+            }
         }
     }
 
-    unsafe fn de_q(&self, head_lock_g: MutexGuard<'_, ()>) -> Result<T, HioLastError> {
+    unsafe fn de_q(&self, pop_lock_g: MutexGuard<'_, CondWaiters>) -> Result<T, HioLastError> {
         let pp_old_head = self.pop_side.head.get();
         let item: T;
         unsafe {
@@ -128,18 +133,20 @@ impl<T: Send> LinkedBQ<T> {
 
         let prev_count = self.count.fetch_sub(1, Ordering::Release);
         // cascade notify push waiters if queue is not full
-        if prev_count > 1 {
+        if prev_count > 1 && pop_lock_g.any() {
             self.pop_side.not_empty.notify_one();
         }
         // was full (full -> not full), notify push waiters
-        drop(head_lock_g);
+        drop(pop_lock_g);
         if prev_count == self.capacity {
-            let _g = self
+            let push_lock_g = self
                 .push_side
-                .tail_lock
+                .push_lock
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            self.push_side.not_full.notify_one();
+            if push_lock_g.any() {
+                self.push_side.not_full.notify_one();
+            }
         }
         Ok(item)
     }
@@ -157,36 +164,54 @@ impl<T: Send> LinkedBQ<T> {
 
 impl<T: Send> BQ<T> for LinkedBQ<T> {
     fn push(&self, item: T) -> Result<(), HioLastError> {
-        if let Ok(g) = self.push_side.tail_lock.lock() {
-            if let Ok(g) = self
+        if let Ok(mut g) = self.push_side.push_lock.lock() {
+            g.enter();
+
+            match self
                 .push_side
                 .not_full
                 .wait_while(g, |_g| !self.is_disposed() && self.is_full())
             {
-                if self.is_disposed() {
-                    return Err(HioLastError::ResourceUnavailable);
+                Ok(mut g) => {
+                    g.leave();
+                    if self.is_disposed() {
+                        return Err(HioLastError::ResourceUnavailable);
+                    }
+                    unsafe {
+                        self.en_q(Node::new(Some(item)), g);
+                    }
+                    return Ok(());
                 }
-                unsafe {
-                    self.en_q(Node::new(Some(item)), g);
+                Err(e) => {
+                    e.into_inner().leave();
+                    return Err(HioLastError::MutexPoisoned);
                 }
-                return Ok(());
             }
         }
         Err(HioLastError::MutexPoisoned)
     }
 
     fn pop(&self) -> Result<T, HioLastError> {
-        if let Ok(g) = self.pop_side.head_lock.lock() {
-            if let Ok(g) = self
+        if let Ok(mut g) = self.pop_side.pop_lock.lock() {
+            g.enter();
+
+            match self
                 .pop_side
                 .not_empty
                 .wait_while(g, |_g| !self.is_disposed() && self.is_empty())
             {
-                if self.is_disposed() && self.is_empty() {
-                    return Err(HioLastError::ResourceUnavailable);
+                Ok(mut g) => {
+                    g.leave();
+                    if self.is_disposed() && self.is_empty() {
+                        return Err(HioLastError::ResourceUnavailable);
+                    }
+                    unsafe {
+                        return self.de_q(g);
+                    }
                 }
-                unsafe {
-                    return self.de_q(g);
+                Err(e) => {
+                    e.into_inner().leave();
+                    return Err(HioLastError::MutexPoisoned);
                 }
             }
         }
@@ -202,7 +227,7 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
             {
                 let _g = self
                     .pop_side
-                    .head_lock
+                    .pop_lock
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
                 self.pop_side.not_empty.notify_all();
@@ -210,7 +235,7 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
             {
                 let _g = self
                     .push_side
-                    .tail_lock
+                    .push_lock
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
                 self.push_side.not_full.notify_all();
