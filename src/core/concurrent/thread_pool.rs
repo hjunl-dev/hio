@@ -90,6 +90,7 @@ impl Drop for ThreadPool {
 mod tests {
     use crate::core::ScopedTimer;
     use crate::core::concurrent::{BQType, create_bq};
+    use crate::{ExecutorType, create_executor};
 
     use super::*;
     use std::sync::atomic::AtomicI32;
@@ -103,7 +104,7 @@ mod tests {
 
         {
             let jq = create_bq::<Job>(BQType::Array, 0);
-            let pool = ThreadPool::with_jq(jq, 4);
+            let pool = create_executor(ExecutorType::ThreadPool, jq, 0);
             let _timer = ScopedTimer::new("test_thread_pool_with_array_bq");
 
             for _ in 0..repeat {
@@ -126,7 +127,7 @@ mod tests {
 
         {
             let jq = create_bq::<Job>(BQType::Linked, 0);
-            let pool = ThreadPool::with_jq(jq, 4);
+            let pool = create_executor(ExecutorType::ThreadPool, jq, 0);
             let _timer = ScopedTimer::new("test_thread_pool_with_linked_bq");
 
             for _ in 0..repeat {
