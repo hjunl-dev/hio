@@ -5,11 +5,13 @@ use std::{
         Arc,
         mpsc::{Receiver, Sender},
     },
+    thread::{self, JoinHandle},
 };
 
 use crate::core::{
     concurrent::Executor,
     transport::tcp::{
+        backend::BackendHandle,
         command::TransportCommand,
         connection::{ConnId, Connection},
         handler::TransportHandler,
@@ -26,7 +28,19 @@ struct Entry<H: TransportHandler> {
     inbox: Arc<Inbox<H>>,
 }
 
-struct Core<H: TransportHandler> {
+struct ReactorHandle {
+    join_handle: Option<JoinHandle<()>>,
+}
+
+impl BackendHandle for ReactorHandle {
+    fn shutdown(mut self: Box<Self>) {
+        if let Some(jh) = self.join_handle.take() {
+            let _ = jh.join();
+        }
+    }
+}
+
+struct ReactorCore<H: TransportHandler> {
     listener: TcpListener,
     conn_map: HashMap<ConnId, Entry<H>>,
     next_id: ConnId,
@@ -35,4 +49,38 @@ struct Core<H: TransportHandler> {
     executor: Arc<dyn Executor>,
     handler: Arc<H>,
     scratch: Vec<u8>,
+}
+
+impl<H: TransportHandler> ReactorCore<H> {
+    pub fn run_loop(mut self) {
+        // Reactor event loop implementation goes here
+    }
+}
+
+pub fn spawn<H: TransportHandler>(
+    listener: TcpListener,
+    tx: Sender<TransportCommand>,
+    rx: Receiver<TransportCommand>,
+    executor: Arc<dyn Executor>,
+    handler: Arc<H>,
+) -> Box<dyn BackendHandle> {
+    listener.set_nonblocking(true).expect("");
+
+    let core = ReactorCore {
+        listener,
+        conn_map: HashMap::new(),
+        next_id: 1,
+        tx,
+        rx,
+        executor,
+        handler,
+        scratch: vec![0u8; 64 * 1024],
+    };
+
+    let join_handle = thread::spawn(move || {
+        core.run_loop();
+    });
+    Box::new(ReactorHandle {
+        join_handle: Some(join_handle),
+    })
 }
