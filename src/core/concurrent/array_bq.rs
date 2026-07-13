@@ -77,7 +77,7 @@ impl<T: Send> ArrayBQ<T> {
             return Err(HioLastError::InvalidState);
         }
         // cascade notify pop waiters if queue is not empty
-        if prev_count - 1 > 0 && g.pop_waiters.any() {
+        if prev_count > 1 && g.pop_waiters.any() {
             self.not_empty.notify_one();
         }
         // was full, notify push waiters
@@ -124,7 +124,7 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
             {
                 Ok(mut g) => {
                     g.pop_waiters.leave();
-                    if self.is_disposed() {
+                    if self.is_disposed() && g.buf.is_empty() {
                         return Err(HioLastError::ResourceUnavailable);
                     }
                     return self.de_q(g);
@@ -144,7 +144,7 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
         {
-            let _g = self.inner.lock();
+            let _g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             self.not_empty.notify_all();
             self.not_full.notify_all();
         }

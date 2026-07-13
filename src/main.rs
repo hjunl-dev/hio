@@ -3,10 +3,10 @@ use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 
 use hio::ScopedTimer;
-use hio::{BQType, ExecutorType, Job, ThreadPool, create_bq, create_executor};
+use hio::{BQType, ExecutorType, Job, create_bq, create_executor};
 
 fn test_thread_pool_with_array_bq() {
-    let counter = Arc::new(AtomicI32::new(0));
+    static COUNTER: AtomicI32 = AtomicI32::new(0);
     let repeat = 1_000_000;
 
     {
@@ -15,20 +15,19 @@ fn test_thread_pool_with_array_bq() {
         let _timer = ScopedTimer::new("test_thread_pool_with_array_bq");
 
         for _ in 0..repeat {
-            let counter_clone = Arc::clone(&counter);
             let _ = pool.submit(Box::new(move || {
-                counter_clone.fetch_add(1, Ordering::SeqCst);
+                COUNTER.fetch_add(1, Ordering::AcqRel);
             }));
         }
     }
 
-    let result = counter.load(Ordering::SeqCst);
+    let result = COUNTER.load(Ordering::Acquire);
     println!("Counter value: {}", result);
     assert_eq!(result, repeat);
 }
 
 fn test_thread_pool_with_linked_bq() {
-    let counter = Arc::new(AtomicI32::new(0));
+    static COUNTER: AtomicI32 = AtomicI32::new(0);
     let repeat = 1_000_000;
 
     {
@@ -37,14 +36,13 @@ fn test_thread_pool_with_linked_bq() {
         let _timer = ScopedTimer::new("test_thread_pool_with_linked_bq");
 
         for _ in 0..repeat {
-            let counter_clone = Arc::clone(&counter);
             let _ = pool.submit(Box::new(move || {
-                counter_clone.fetch_add(1, Ordering::SeqCst);
+                COUNTER.fetch_add(1, Ordering::AcqRel);
             }));
         }
     }
 
-    let result = counter.load(Ordering::SeqCst);
+    let result = COUNTER.load(Ordering::Acquire);
     println!("Counter value: {}", result);
     assert_eq!(result, repeat);
 }
