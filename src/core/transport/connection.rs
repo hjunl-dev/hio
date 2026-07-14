@@ -9,8 +9,6 @@ use std::{
 // It is owned by the poller and handles non-blocking reads and partial writes.
 //
 
-pub type ConnId = u64;
-
 pub enum ReadOutcome {
     Data(usize),
     Idle,

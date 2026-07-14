@@ -1,8 +1,8 @@
-use crate::core::transport::netpoll::connection::ConnId;
-
 //
 // Command for sending commands to the poller thread.
 //
+
+use crate::core::transport::ConnId;
 
 #[derive(Clone)]
 pub enum TransportCommand {

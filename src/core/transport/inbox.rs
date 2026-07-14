@@ -5,10 +5,7 @@ use std::{
 
 use crate::core::{
     concurrent::Executor,
-    transport::netpoll::{
-        connection::ConnId,
-        handler::{PollerHandle, TransportHandler},
-    },
+    transport::{ConnId, TransportHandler, handler::PollerHandle},
 };
 
 //

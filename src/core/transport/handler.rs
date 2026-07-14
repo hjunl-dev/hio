@@ -1,6 +1,6 @@
 use std::sync::mpsc::Sender;
 
-use crate::core::transport::netpoll::{command::TransportCommand, connection::ConnId};
+use crate::core::transport::{ConnId, command::TransportCommand};
 
 //
 // PollerHandle is a handle for sending commands to the poller thread.
@@ -18,10 +18,4 @@ impl PollerHandle {
     pub fn close(&self, id: ConnId) {
         let _ = self.tx.send(TransportCommand::Close(id));
     }
-}
-
-pub trait TransportHandler: Send + Sync + 'static {
-    fn on_connect(&self, h: &PollerHandle);
-    fn on_data(&self, data: &[u8], h: &PollerHandle);
-    fn on_close(&self, h: &PollerHandle);
 }
