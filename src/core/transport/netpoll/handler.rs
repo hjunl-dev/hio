@@ -1,6 +1,6 @@
 use std::sync::mpsc::Sender;
 
-use crate::core::transport::tcp::{command::TransportCommand, connection::ConnId};
+use crate::core::transport::netpoll::{command::TransportCommand, connection::ConnId};
 
 //
 // PollerHandle is a handle for sending commands to the poller thread.

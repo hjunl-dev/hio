@@ -10,12 +10,14 @@ use std::{
 
 use crate::core::{
     concurrent::Executor,
-    transport::tcp::{
-        backend::BackendHandle,
-        command::TransportCommand,
-        connection::{ConnId, Connection},
-        handler::TransportHandler,
-        inbox::Inbox,
+    transport::{
+        TransportBackendHandle,
+        netpoll::{
+            command::TransportCommand,
+            connection::{ConnId, Connection},
+            handler::TransportHandler,
+            inbox::Inbox,
+        },
     },
 };
 
@@ -32,7 +34,7 @@ struct ReactorHandle {
     join_handle: Option<JoinHandle<()>>,
 }
 
-impl BackendHandle for ReactorHandle {
+impl TransportBackendHandle for ReactorHandle {
     fn shutdown(mut self: Box<Self>) {
         if let Some(jh) = self.join_handle.take() {
             let _ = jh.join();
@@ -63,7 +65,7 @@ pub fn spawn<H: TransportHandler>(
     rx: Receiver<TransportCommand>,
     executor: Arc<dyn Executor>,
     handler: Arc<H>,
-) -> Box<dyn BackendHandle> {
+) -> Box<dyn TransportBackendHandle> {
     listener.set_nonblocking(true).expect("");
 
     let core = ReactorCore {

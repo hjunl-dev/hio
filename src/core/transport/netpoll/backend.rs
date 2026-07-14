@@ -7,7 +7,3 @@ pub enum BackendKind {
     Reactor,
     ThreadPerConnection,
 }
-
-pub trait BackendHandle: Send {
-    fn shutdown(self: Box<Self>);
-}

@@ -9,21 +9,24 @@ use std::{
 
 use crate::core::{
     concurrent::Executor,
-    transport::tcp::{
-        backend::{BackendHandle, BackendKind},
-        command::TransportCommand,
-        handler::{PollerHandle, TransportHandler},
-        reactor,
+    transport::{
+        TransportBackendHandle,
+        netpoll::{
+            backend::BackendKind,
+            command::TransportCommand,
+            handler::{PollerHandle, TransportHandler},
+            reactor,
+        },
     },
 };
 
-pub struct Server {
+pub struct NetPoll {
     tx: Sender<TransportCommand>,
     local_addr: SocketAddr,
-    backend_handle: Option<Box<dyn BackendHandle>>,
+    backend_handle: Option<Box<dyn TransportBackendHandle>>,
 }
 
-impl Server {
+impl NetPoll {
     pub fn bind<A, H>(
         addr: A,
         backend: BackendKind,
@@ -38,14 +41,14 @@ impl Server {
         let local_addr = listener.local_addr()?;
         let (tx, rx) = mpsc::channel();
 
-        let handle: Box<dyn BackendHandle> = match backend {
+        let handle: Box<dyn TransportBackendHandle> = match backend {
             BackendKind::Reactor => reactor::spawn(listener, tx.clone(), rx, executor, handler),
             BackendKind::ThreadPerConnection => {
                 todo!()
             }
         };
 
-        Ok(Server {
+        Ok(NetPoll {
             tx,
             local_addr,
             backend_handle: Some(handle),
@@ -63,7 +66,7 @@ impl Server {
     }
 }
 
-impl Drop for Server {
+impl Drop for NetPoll {
     fn drop(&mut self) {
         let _ = self.tx.send(TransportCommand::Shutdown);
         if let Some(bh) = self.backend_handle.take() {

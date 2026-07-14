@@ -1,4 +1,4 @@
-use crate::core::transport::tcp::connection::ConnId;
+use crate::core::transport::netpoll::connection::ConnId;
 
 //
 // Command for sending commands to the poller thread.

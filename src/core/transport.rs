@@ -1,5 +1,5 @@
-pub(crate) mod tcp;
-pub(crate) mod udp;
+pub(crate) mod netpoll;
+pub(crate) mod udpoll;
 
 //
 // Transport
@@ -8,6 +8,10 @@ pub(crate) mod udp;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub enum TransportType {
-    Tcp = 0,
-    Udp = 1,
+    NetPoll = 0,
+    Udpoll = 1,
+}
+
+pub trait TransportBackendHandle: Send {
+    fn shutdown(self: Box<Self>);
 }
