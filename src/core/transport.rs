@@ -4,6 +4,7 @@ pub(crate) mod connection;
 pub(crate) mod handler;
 pub(crate) mod inbox;
 pub(crate) mod reactor;
+pub(crate) mod thread_per_conn;
 
 use std::{
     io,
@@ -57,7 +58,7 @@ impl Transport {
         addr: A,
         backend_kind: TcpBackendKind,
         executor: Arc<dyn Executor>,
-        transport_handler: Arc<H>,
+        handler: Arc<H>,
     ) -> io::Result<Self>
     where
         A: ToSocketAddrs,
@@ -68,10 +69,10 @@ impl Transport {
         let (tx, rx) = mpsc::channel();
 
         let bh: Box<dyn TransportBackendHandle> = match backend_kind {
-            TcpBackendKind::Reactor => {
-                reactor::spawn(listener, tx.clone(), rx, executor, transport_handler)
+            TcpBackendKind::Reactor => reactor::spawn(listener, tx.clone(), rx, executor, handler),
+            TcpBackendKind::ThreadPerConnection => {
+                thread_per_conn::spawn(listener, local_addr, tx.clone(), rx, executor, handler)
             }
-            TcpBackendKind::ThreadPerConnection => todo!(),
         };
 
         Ok(Self {
