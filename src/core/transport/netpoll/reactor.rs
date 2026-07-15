@@ -11,8 +11,8 @@ use std::{
 use crate::core::{
     concurrent::Executor,
     transport::{
-        ConnId, TransportBackendHandle, TransportHandler,
-        {command::TransportCommand, connection::Connection, inbox::Inbox},
+        ConnId, TransportBackendHandle, TransportCommand, TransportHandler,
+        netpoll::{connection::Connection, inbox::Inbox},
     },
 };
 

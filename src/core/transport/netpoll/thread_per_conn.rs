@@ -8,7 +8,7 @@ use std::{
 
 use crate::core::{
     concurrent::Executor,
-    transport::{TransportBackendHandle, TransportHandler, command::TransportCommand},
+    transport::{TransportBackendHandle, TransportCommand, TransportHandler},
 };
 
 pub fn spawn<H: TransportHandler>(
