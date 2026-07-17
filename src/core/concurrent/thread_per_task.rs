@@ -1,83 +1,59 @@
 use std::{
     sync::{
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex,
     },
-    thread::{self, JoinHandle},
+    thread::JoinHandle,
 };
 
-use crate::{
-    core::concurrent::{Executor, Job},
-    error::HioLastError,
-};
-
-pub struct ThreadPerTaskPool {
+struct Inner {
+    thread_count: Mutex<usize>,
+    max_limit_cv: Condvar,
+    max_threads: usize,
     disposed: AtomicBool,
-    // 현재 실행 중인 스레드 개수를 추적하기 위한 카운터
-    active_workers: Arc<AtomicUsize>,
-    // 종료(dispose) 시 모든 스레드가 끝날 때까지 기다리기 위해 핸들을 보관
-    handles: Mutex<Vec<JoinHandle<()>>>,
 }
 
-impl ThreadPerTaskPool {
-    pub fn new() -> Self {
+impl Inner {
+    fn new(max_threads: usize) -> Self {
         Self {
+            thread_count: Mutex::new(0),
+            max_limit_cv: Condvar::new(),
+            max_threads,
             disposed: AtomicBool::new(false),
-            active_workers: Arc::new(AtomicUsize::new(0)),
-            handles: Mutex::new(Vec::new()),
         }
     }
-}
 
-impl Executor for ThreadPerTaskPool {
-    fn submit(&self, job: Job) -> Result<(), HioLastError> {
-        // 이미 dispose 된 상태라면 에러 반환
-        if self.is_disposed() {
-            // 프로젝트의 HioLastError 구조에 맞게 에러를 반환해 주세요.
-            // 예: return Err(HioLastError::Disposed);
-            panic!("Cannot submit job: ThreadPerTaskPool is disposed"); 
-        }
+    fn acquire(&self) -> bool {
+        if let Ok(cnt_g) = self.thread_count.lock() {
+            if self.max_threads > 0 {
+                if let Ok(mut cnt_g) = self.max_limit_cv.wait_while(cnt_g, |cnt_g| {
+                    !self.disposed.load(Ordering::Acquire) && *cnt_g >= self.max_threads
+                }) {
+                    if self.disposed.load(Ordering::Acquire) {
+                        return false;
+                    }
 
-        let active_workers = Arc::clone(&self.active_workers);
-        
-        // 작업 시작 전 워커 수 증가
-        active_workers.fetch_add(1, Ordering::SeqCst);
-
-        // 큐를 거치지 않고 즉시 스레드를 생성하여 작업을 실행
-        let handle = thread::spawn(move || {
-            job();
-            // 작업 완료 후 워커 수 감소
-            active_workers.fetch_sub(1, Ordering::SeqCst);
-        });
-
-        // 생성된 핸들을 저장 (Graceful Shutdown을 위해)
-        if let Ok(mut handles) = self.handles.lock() {
-            // 메모리 누수를 방지하기 위해 이미 종료된 스레드 핸들은 주기적으로 정리합니다.
-            // (Rust 1.61+ 이상부터 JoinHandle::is_finished() 사용 가능)
-            handles.retain(|h| !h.is_finished());
-            handles.push(handle);
-        }
-
-        Ok(())
-    }
-
-    fn worker_count(&self) -> usize {
-        self.active_workers.load(Ordering::SeqCst)
-    }
-
-    fn dispose(&mut self) {
-        if self
-            .disposed
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            // 스레드가 새로 생성되는 것을 막은 후, 실행 중인 모든 스레드의 종료를 대기합니다.
-            if let Ok(mut handles) = self.handles.lock() {
-                for handle in handles.drain(..) {
-                    let _ = handle.join();
+                    *cnt_g += 1;
+                    return true;
                 }
             }
         }
+        false
+    }
+
+    fn release(&self) {
+        if let Ok(mut cnt_g) = self.thread_count.lock() {
+            *cnt_g -= 1;
+            self.max_limit_cv.notify_one();
+        }
+    }
+
+    fn count(&self) -> usize {
+        let mut count = 0;
+        if let Ok(cnt_g) = self.thread_count.lock() {
+            count = *cnt_g;
+        }
+        count
     }
 
     fn is_disposed(&self) -> bool {
@@ -85,8 +61,28 @@ impl Executor for ThreadPerTaskPool {
     }
 }
 
-impl Drop for ThreadPerTaskPool {
+struct InnerGuard(Arc<Inner>);
+
+impl Drop for InnerGuard {
     fn drop(&mut self) {
-        self.dispose();
+        self.0.release();
+    }
+}
+
+pub struct ThreadPerTaskPool {
+    inner: Arc<Inner>,
+    stack_size: Option<usize>,
+    handles: Mutex<Vec<JoinHandle<()>>>,
+    seq: AtomicUsize,
+}
+
+impl ThreadPerTaskPool {
+    pub fn new(max_threads: usize) -> Self {
+        Self {
+            inner: Arc::new(Inner::new(max_threads)),
+            stack_size: None,
+            handles: Mutex::new(Vec::new()),
+            seq: AtomicUsize::new(0),
+        }
     }
 }
