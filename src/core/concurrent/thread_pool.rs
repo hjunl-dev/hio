@@ -87,6 +87,7 @@ impl Drop for ThreadPool {
 // Tests for the ThreadPool implementation
 //
 
+#[cfg(test)]
 mod tests {
     use crate::core::ScopedTimer;
     use crate::core::concurrent::{BQType, create_bq};
