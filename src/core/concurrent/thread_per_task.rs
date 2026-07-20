@@ -12,6 +12,10 @@ use crate::{
     error::HioLastError::{self, MutexPoisoned},
 };
 
+//
+// Primitive for building ThreadPerTaskPool
+//
+
 struct Inner {
     thread_count: Mutex<usize>,
     max_limit_cv: Condvar,
@@ -80,6 +84,10 @@ impl Drop for InnerGuard {
         self.0.release();
     }
 }
+
+//
+// ThreadPerTaskPool impl
+//
 
 pub struct ThreadPerTaskPool {
     inner: Arc<Inner>,

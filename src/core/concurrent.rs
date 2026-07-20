@@ -1,5 +1,6 @@
 pub(crate) mod array_bq;
 pub(crate) mod linked_bq;
+pub(crate) mod semaphore;
 pub(crate) mod thread_per_task;
 pub(crate) mod thread_pool;
 

@@ -11,6 +11,10 @@ use crate::{
     error::HioLastError,
 };
 
+//
+// ThreadPool impl
+//
+
 pub struct ThreadPool {
     num_workers: usize,
     disposed: AtomicBool,
