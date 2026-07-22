@@ -1,9 +1,13 @@
-[package]
-name = "hio"
+[workspace]
+resolver = "3"
+members  = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[dependencies]
+[workspace.dependencies]
+hio-core       = { path = "crates/hio-core" }
+hio-concurrent = { path = "crates/hio-concurrent" }
+hio-transport  = { path = "crates/hio-transport" }
+hio-runtime    = { path = "crates/hio-runtime" }

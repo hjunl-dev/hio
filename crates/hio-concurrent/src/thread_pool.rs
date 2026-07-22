@@ -6,10 +6,8 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::{
-    core::concurrent::{BQ, BQType, Executor, Job, JobQueue, create_bq, linked_bq::LinkedBQ},
-    error::HioLastError,
-};
+use crate::{BQ, BQType, Executor, Job, JobQueue, create_bq};
+use hio_core::HioLastError;
 
 //
 // ThreadPool impl
@@ -93,9 +91,9 @@ impl Drop for ThreadPool {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::ScopedTimer;
-    use crate::core::concurrent::{BQType, create_bq};
+    use crate::{BQType, create_bq};
     use crate::{ExecutorType, create_executor};
+    use hio_core::ScopedTimer;
 
     use super::*;
     use std::sync::atomic::AtomicI32;

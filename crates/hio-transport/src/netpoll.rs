@@ -11,10 +11,8 @@ use std::{
     sync::{Arc, mpsc},
 };
 
-use crate::core::{
-    concurrent::Executor,
-    transport::{Transport, TransportHandler},
-};
+use crate::{Transport, TransportHandler};
+use hio_concurrent::Executor;
 
 //
 // netpoll

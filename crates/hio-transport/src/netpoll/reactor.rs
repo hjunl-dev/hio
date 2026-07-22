@@ -1,3 +1,4 @@
+use std::thread;
 use std::{
     collections::HashMap,
     net::TcpListener,
@@ -5,16 +6,14 @@ use std::{
         Arc,
         mpsc::{Receiver, Sender},
     },
-    thread::{self, JoinHandle},
+    thread::JoinHandle,
 };
 
-use crate::core::{
-    concurrent::Executor,
-    transport::{
-        ConnId, TransportBackendHandle, TransportCommand, TransportHandler,
-        netpoll::{connection::Connection, inbox::Inbox},
-    },
+use crate::{
+    ConnId, TransportBackendHandle, TransportCommand, TransportHandler,
+    netpoll::{connection::Connection, inbox::Inbox},
 };
+use hio_concurrent::Executor;
 
 //
 //

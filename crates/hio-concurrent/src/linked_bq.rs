@@ -6,13 +6,8 @@ use std::{
     },
 };
 
-use crate::{
-    core::{
-        CachePadded,
-        concurrent::{BQ, CondWaiters},
-    },
-    error::HioLastError,
-};
+use crate::{BQ, CachePadded, CondWaiters};
+use hio_core::HioLastError;
 
 //
 // Primitive for building Linked Blocking Queue
@@ -274,7 +269,7 @@ unsafe impl<T: Send> Sync for LinkedBQ<T> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::concurrent::BQ;
+    use crate::BQ;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},

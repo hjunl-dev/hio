@@ -5,3 +5,36 @@ version = 4
 [[package]]
 name = "hio"
 version = "0.1.0"
+dependencies = [
+ "hio-concurrent",
+ "hio-core",
+ "hio-runtime",
+]
+
+[[package]]
+name = "hio-concurrent"
+version = "0.1.0"
+dependencies = [
+ "hio-core",
+]
+
+[[package]]
+name = "hio-core"
+version = "0.1.0"
+
+[[package]]
+name = "hio-runtime"
+version = "0.1.0"
+dependencies = [
+ "hio-concurrent",
+ "hio-core",
+ "hio-transport",
+]
+
+[[package]]
+name = "hio-transport"
+version = "0.1.0"
+dependencies = [
+ "hio-concurrent",
+ "hio-core",
+]

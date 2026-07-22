@@ -6,10 +6,8 @@ use std::{
     },
 };
 
-use crate::core::{
-    concurrent::Executor,
-    transport::{TransportBackendHandle, TransportCommand, TransportHandler},
-};
+use crate::{TransportBackendHandle, TransportCommand, TransportHandler};
+use hio_concurrent::Executor;
 
 pub fn spawn<H: TransportHandler>(
     listener: TcpListener,

@@ -1,0 +1,7 @@
+[package]
+name = "hio-concurrent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hio-core.workspace = true

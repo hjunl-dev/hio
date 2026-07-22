@@ -1,6 +1,6 @@
 use std::sync::mpsc::Sender;
 
-use crate::core::transport::{ConnId, TransportCommand};
+use crate::{ConnId, TransportCommand};
 
 //
 // PollerHandle is a handle for sending commands to the poller thread.

@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
-use crate::error::HioLastError::{self};
+use hio_core::HioLastError;
 
 //
 // Semaphore impl

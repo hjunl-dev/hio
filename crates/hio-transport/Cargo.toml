@@ -1,0 +1,8 @@
+[package]
+name = "hio-transport"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hio-core.workspace = true
+hio-concurrent.workspace = true

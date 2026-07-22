@@ -1,0 +1,12 @@
+[package]
+name = "hio"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hio-core.workspace       = true
+hio-concurrent.workspace = true
+hio-runtime.workspace    = true

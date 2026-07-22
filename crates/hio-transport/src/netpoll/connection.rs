@@ -29,10 +29,6 @@ impl Connection {
         })
     }
 
-    pub fn write_payload(&mut self, data: Vec<u8>) {
-        self.write_buf.extend(data);
-    }
-
     pub fn try_read(&mut self, buf: &mut [u8]) -> ReadOutcome {
         match self.stream.read(buf) {
             Ok(0) => ReadOutcome::Eof,
@@ -47,7 +43,11 @@ impl Connection {
         }
     }
 
-    pub fn flush(&mut self) -> io::Result<bool> {
+    pub fn write_buf(&mut self, data: Vec<u8>) {
+        self.write_buf.extend(data);
+    }
+
+    pub fn flush_buf(&mut self) -> io::Result<bool> {
         while !self.write_buf.is_empty() {
             let n = {
                 let (head, _) = self.write_buf.as_slices();

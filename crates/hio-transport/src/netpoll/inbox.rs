@@ -3,10 +3,8 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
-use crate::core::{
-    concurrent::Executor,
-    transport::{ConnId, PollerHandle, TransportHandler},
-};
+use crate::{ConnId, PollerHandle, TransportHandler};
+use hio_concurrent::Executor;
 
 //
 // Inbox is a queue for messages received from the poller thread.

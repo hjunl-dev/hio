@@ -1,0 +1,9 @@
+[package]
+name = "hio-runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hio-core.workspace       = true
+hio-concurrent.workspace = true
+hio-transport.workspace  = true

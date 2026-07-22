@@ -6,10 +6,8 @@ use std::{
     },
 };
 
-use crate::{
-    core::concurrent::{BQ, CondWaiters},
-    error::HioLastError,
-};
+use crate::{BQ, CondWaiters};
+use hio_core::HioLastError;
 
 //
 // Primitive for building Array Blocking Queue
@@ -171,7 +169,7 @@ impl<T: Send> Drop for ArrayBQ<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::concurrent::BQ; // 트레이트 메서드 스코프 보장
+    use crate::BQ;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},

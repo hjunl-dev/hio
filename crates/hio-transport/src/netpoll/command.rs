@@ -2,7 +2,7 @@
 // Command for sending commands to the poller thread.
 //
 
-use crate::core::transport::ConnId;
+use crate::ConnId;
 
 #[derive(Clone)]
 pub enum TransportCommand {

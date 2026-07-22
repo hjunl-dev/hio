@@ -1,4 +1,4 @@
-use crate::core::transport::udpoll::PeerId;
+use crate::udpoll::PeerId;
 
 pub enum Command {
     Send {
