@@ -3,6 +3,7 @@
 //
 
 mod array_bq;
+mod condvar_semaphore;
 mod linked_bq;
 mod semaphore;
 mod thread_per_task;
@@ -39,6 +40,26 @@ impl<T> std::ops::Deref for CachePadded<T> {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct CondWaiters(usize);
+
+impl CondWaiters {
+    #[inline]
+    fn enter(&mut self) {
+        self.0 += 1;
+    }
+    #[inline]
+    fn leave(&mut self) {
+        if self.0 > 0 {
+            self.0 -= 1;
+        }
+    }
+    #[inline]
+    fn any(&self) -> bool {
+        self.0 > 0
+    }
+}
+
 //
 // Blocking Queue
 //
@@ -58,26 +79,6 @@ pub trait BQ<T: Send>: Send + Sync {
     fn size(&self) -> usize;
     fn capacity(&self) -> usize;
     fn is_disposed(&self) -> bool;
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-struct CondWaiters(usize);
-
-impl CondWaiters {
-    #[inline]
-    fn enter(&mut self) {
-        self.0 += 1;
-    }
-    #[inline]
-    fn leave(&mut self) {
-        if self.0 > 0 {
-            self.0 -= 1;
-        }
-    }
-    #[inline]
-    fn any(&self) -> bool {
-        self.0 > 0
-    }
 }
 
 fn ensure_capacity(capacity: usize) -> usize {
@@ -136,5 +137,37 @@ pub fn create_executor(
         ExecutorType::ThreadPool => Arc::new(ThreadPool::with_jq(job_queue, num_workers)),
         ExecutorType::ThreadPerTask => todo!(),
         ExecutorType::WorkStealing => todo!(),
+    }
+}
+
+//
+// Semaphore
+//
+
+pub enum SemaphoreType {
+    FutexSem = 0,
+    CondvarSem = 1,
+}
+
+pub trait Semaphore: Send + Sync {
+    fn make(permits: u32) -> Self
+    where
+        Self: Sized;
+
+    fn acquire(&self);
+    fn try_acquire(&self);
+    fn acquire_timeout(&self);
+    fn release(&self, n: u32);
+    fn available_permits(&self) -> u32;
+}
+
+fn ensure_permits(permits: u32) -> u32 {
+    if permits == 0 { 1 } else { permits }
+}
+
+pub fn create_semaphore(sem_type: SemaphoreType, permits: u32) -> Arc<dyn Semaphore> {
+    match sem_type {
+        SemaphoreType::FutexSem => todo!(),
+        SemaphoreType::CondvarSem => todo!(),
     }
 }
