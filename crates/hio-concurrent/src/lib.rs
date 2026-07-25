@@ -4,6 +4,7 @@
 
 mod array_bq;
 mod condvar_semaphore;
+mod futex_semaphore;
 mod linked_bq;
 mod semaphore;
 mod thread_per_task;
@@ -11,7 +12,7 @@ mod thread_pool;
 
 pub use thread_pool::ThreadPool;
 
-use std::{ffi::c_void, sync::Arc, thread};
+use std::{ffi::c_void, sync::Arc, thread, time::Duration};
 
 use crate::linked_bq::LinkedBQ;
 use hio_core::HioLastError;
@@ -155,8 +156,7 @@ pub trait Semaphore: Send + Sync {
         Self: Sized;
 
     fn acquire(&self);
-    fn try_acquire(&self);
-    fn acquire_timeout(&self);
+    fn try_acquire(&self) -> Result<(), HioLastError>;
     fn release(&self, n: u32);
     fn available_permits(&self) -> u32;
 }
