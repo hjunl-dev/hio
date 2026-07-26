@@ -14,7 +14,7 @@ pub use thread_pool::ThreadPool;
 
 use std::{ffi::c_void, sync::Arc, thread, time::Duration};
 
-use crate::linked_bq::LinkedBQ;
+use crate::{futex_semaphore::FutexSemaphore, linked_bq::LinkedBQ};
 use hio_core::HioLastError;
 
 //
@@ -167,7 +167,7 @@ fn ensure_permits(permits: u32) -> u32 {
 
 pub fn create_semaphore(sem_type: SemaphoreType, permits: u32) -> Arc<dyn Semaphore> {
     match sem_type {
-        SemaphoreType::FutexSem => todo!(),
+        SemaphoreType::FutexSem => Arc::new(FutexSemaphore::new(permits)),
         SemaphoreType::CondvarSem => todo!(),
     }
 }
