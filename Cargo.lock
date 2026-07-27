@@ -27,6 +27,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-wait",
  "hio-core",
+ "libc",
 ]
 
 [[package]]

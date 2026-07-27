@@ -4,6 +4,7 @@
 
 mod array_bq;
 mod condvar_semaphore;
+mod futex;
 mod futex_semaphore;
 mod linked_bq;
 mod semaphore;
