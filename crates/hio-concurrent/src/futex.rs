@@ -1,13 +1,3 @@
-//
-// platform_futex
-// {
-//      wait(addr: &AtomicU32, expected: u32);
-//      wait_timeout(addr: &AtomicU32, expected: u32);
-//      wake_one(addr: &AtomicU32);
-//      wake_all(addr: &AtomicU32);
-// }
-//
-
 #[cfg(target_os = "windows")]
 #[path = "futex/mswin.rs"]
 mod platform_futex;
@@ -20,6 +10,16 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
     time::Duration,
 };
+
+//
+// platform_futex
+// {
+//      wait(addr: &AtomicU32, expected: u32);
+//      wait_timeout(addr: &AtomicU32, expected: u32);
+//      wake_one(addr: &AtomicU32);
+//      wake_all(addr: &AtomicU32);
+// }
+//
 
 #[derive(Debug)]
 #[repr(transparent)]

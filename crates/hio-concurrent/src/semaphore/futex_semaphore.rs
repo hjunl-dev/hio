@@ -2,11 +2,10 @@
 
 use std::sync::atomic::{AtomicU32, Ordering::*};
 
-use crate::{
-    futex::FutexWord,
-    semaphore::{MAX_PERMITS, Semaphore},
-};
+use crate::{futex::FutexWord, semaphore::Semaphore};
 use hio_core::HioLastError::{self, Failed};
+
+const MAX_PERMITS: u32 = u32::MAX >> 1;
 
 #[derive(Debug)]
 pub struct FutexSemaphore {

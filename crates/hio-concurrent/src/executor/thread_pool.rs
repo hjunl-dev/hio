@@ -6,8 +6,12 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::{BQ, BQType, Executor, Job, JobQueue, create_bq};
 use hio_core::HioLastError;
+
+use crate::{
+    bq::{BQ, BQType, create_bq},
+    executor::{Executor, Job, JobQueue},
+};
 
 //
 // ThreadPool impl
@@ -91,8 +95,7 @@ impl Drop for ThreadPool {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BQType, create_bq};
-    use crate::{ExecutorType, create_executor};
+    use crate::executor::{ExecutorType, create_executor};
     use hio_core::ScopedTimer;
 
     use super::*;

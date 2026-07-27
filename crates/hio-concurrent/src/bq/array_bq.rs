@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use crate::{BQ, CondWaiters};
+use crate::bq::{BQ, CondWaiters};
 use hio_core::HioLastError;
 
 //
@@ -169,7 +169,6 @@ impl<T: Send> Drop for ArrayBQ<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BQ;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},

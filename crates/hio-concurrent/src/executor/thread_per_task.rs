@@ -6,8 +6,9 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::{Executor, Job};
 use hio_core::HioLastError;
+
+use crate::executor::{Executor, Job};
 //
 // Primitive for building ThreadPerTaskPool
 //

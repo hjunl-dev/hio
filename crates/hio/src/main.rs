@@ -1,9 +1,9 @@
+use std::sync::Arc;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
 use hio::ScopedTimer;
-use hio::{create_bq, create_executor, BQType, ExecutorType, Job};
+use hio::{BQType, ExecutorType, Job, create_bq, create_executor};
 
 fn test_thread_pool_with_array_bq() {
     static COUNTER: AtomicI32 = AtomicI32::new(0);

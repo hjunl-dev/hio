@@ -7,5 +7,5 @@ mod ffi;
 mod ffi_support;
 
 // Public facade — keeps the historical `hio::…` paths stable.
-pub use hio_concurrent::{BQType, ExecutorType, Job, ThreadPool, create_bq, create_executor};
+pub use hio_concurrent::{BQType, ExecutorType, Job, create_bq, create_executor};
 pub use hio_core::ScopedTimer;

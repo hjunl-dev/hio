@@ -9,8 +9,6 @@ use std::sync::Arc;
 // Semaphore
 //
 
-pub const MAX_PERMITS: u32 = u32::MAX >> 1;
-
 pub enum SemaphoreType {
     FutexSem = 0,
     CondvarSem = 1,

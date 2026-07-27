@@ -11,5 +11,4 @@ hio-core       = { path = "crates/hio-core" }
 hio-concurrent = { path = "crates/hio-concurrent" }
 hio-transport  = { path = "crates/hio-transport" }
 hio-runtime    = { path = "crates/hio-runtime" }
-atomic-wait = "1"
 libc = "0.2"
