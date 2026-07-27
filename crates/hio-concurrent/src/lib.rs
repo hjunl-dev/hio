@@ -3,9 +3,7 @@
 //
 
 mod array_bq;
-mod condvar_semaphore;
 mod futex;
-mod futex_semaphore;
 mod linked_bq;
 mod semaphore;
 mod thread_per_task;
@@ -15,7 +13,7 @@ pub use thread_pool::ThreadPool;
 
 use std::{ffi::c_void, sync::Arc, thread, time::Duration};
 
-use crate::{futex_semaphore::FutexSemaphore, linked_bq::LinkedBQ};
+use crate::linked_bq::LinkedBQ;
 use hio_core::HioLastError;
 
 //
@@ -139,36 +137,5 @@ pub fn create_executor(
         ExecutorType::ThreadPool => Arc::new(ThreadPool::with_jq(job_queue, num_workers)),
         ExecutorType::ThreadPerTask => todo!(),
         ExecutorType::WorkStealing => todo!(),
-    }
-}
-
-//
-// Semaphore
-//
-
-pub enum SemaphoreType {
-    FutexSem = 0,
-    CondvarSem = 1,
-}
-
-pub trait Semaphore: Send + Sync {
-    fn make(permits: u32) -> Self
-    where
-        Self: Sized;
-
-    fn acquire(&self);
-    fn try_acquire(&self) -> Result<(), HioLastError>;
-    fn release(&self, n: u32);
-    fn available_permits(&self) -> u32;
-}
-
-fn ensure_permits(permits: u32) -> u32 {
-    if permits == 0 { 1 } else { permits }
-}
-
-pub fn create_semaphore(sem_type: SemaphoreType, permits: u32) -> Arc<dyn Semaphore> {
-    match sem_type {
-        SemaphoreType::FutexSem => Arc::new(FutexSemaphore::new(permits)),
-        SemaphoreType::CondvarSem => todo!(),
     }
 }

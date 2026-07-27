@@ -2,16 +2,15 @@
 
 use std::sync::atomic::{AtomicU32, Ordering::*};
 
-use atomic_wait::{wait, wake_all, wake_one};
+use crate::{
+    futex::FutexWord,
+    semaphore::{MAX_PERMITS, Semaphore},
+};
 use hio_core::HioLastError::{self, Failed};
-
-use crate::Semaphore;
-
-pub const MAX_PERMITS: u32 = u32::MAX >> 1;
 
 #[derive(Debug)]
 pub struct FutexSemaphore {
-    count: AtomicU32,
+    permits: FutexWord,
     waiters: AtomicU32,
 }
 
@@ -19,17 +18,17 @@ impl FutexSemaphore {
     pub const fn new(permits: u32) -> Self {
         assert!(permits <= MAX_PERMITS);
         Self {
-            count: AtomicU32::new(permits),
+            permits: FutexWord::new(permits),
             waiters: AtomicU32::new(0),
         }
     }
 
     #[inline]
     fn try_decrement(&self) -> bool {
-        let mut cur = self.count.load(Relaxed);
+        let mut cur = self.permits.load(Relaxed);
         while cur > 0 {
             match self
-                .count
+                .permits
                 .compare_exchange_weak(cur, cur - 1, Acquire, Relaxed)
             {
                 Ok(_) => return true,
@@ -47,8 +46,8 @@ impl FutexSemaphore {
                 self.waiters.fetch_sub(1, Relaxed);
                 return;
             }
-            if self.count.load(SeqCst) == 0 {
-                wait(&self.count, 0);
+            if self.permits.load(SeqCst) == 0 {
+                self.permits.wait(0);
             }
         }
     }
@@ -56,10 +55,10 @@ impl FutexSemaphore {
     #[cold]
     fn wake_waiters(&self, n: u32, waiting: u32) {
         if waiting <= n {
-            wake_all(&self.count);
+            self.permits.wake_all();
         } else {
             for _ in 0..n {
-                wake_one(&self.count);
+                self.permits.wake_one();
             }
         }
     }
@@ -78,10 +77,10 @@ impl Semaphore for FutexSemaphore {
     }
 
     fn try_acquire(&self) -> Result<(), HioLastError> {
-        let cur = self.count.load(Relaxed);
+        let cur = self.permits.load(Relaxed);
         if cur > 0
             && self
-                .count
+                .permits
                 .compare_exchange(cur, cur - 1, Acquire, Relaxed)
                 .is_ok()
         {
@@ -95,7 +94,7 @@ impl Semaphore for FutexSemaphore {
         if n == 0 {
             return;
         }
-        let prev = self.count.fetch_add(n, SeqCst);
+        let prev = self.permits.fetch_add(n, SeqCst);
         assert!(prev <= MAX_PERMITS - n, "semaphore permit overflow");
 
         let waiting = self.waiters.load(SeqCst);
@@ -105,6 +104,6 @@ impl Semaphore for FutexSemaphore {
     }
 
     fn available_permits(&self) -> u32 {
-        self.count.load(Relaxed)
+        self.permits.load(Relaxed)
     }
 }

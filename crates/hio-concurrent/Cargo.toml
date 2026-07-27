@@ -5,7 +5,6 @@ edition.workspace = true
 
 [dependencies]
 hio-core.workspace = true
-atomic-wait.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 libc.workspace = true

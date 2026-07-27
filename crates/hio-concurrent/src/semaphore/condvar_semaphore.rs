@@ -10,7 +10,7 @@ use std::{
 
 use hio_core::HioLastError;
 
-use crate::Semaphore;
+use crate::semaphore::Semaphore;
 
 const SPIN_LIMIT: u32 = 40;
 
