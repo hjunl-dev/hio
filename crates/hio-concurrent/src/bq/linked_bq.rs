@@ -8,7 +8,7 @@ use std::{
 
 use hio_core::HioLastError;
 
-use crate::bq::{BQ, CachePadded, CondWaiters};
+use crate::bq::{BQ, CachePadded, ensure_capacity};
 
 //
 // Primitive for building Linked Blocking Queue
@@ -32,15 +32,35 @@ impl<T> Node<T> {
 }
 
 struct PopSide<T> {
-    pop_lock: Mutex<CondWaiters>,
+    pop_lock: Mutex<CondWaitersTmp>,
     not_empty: Condvar,
     head: UnsafeCell<*mut Node<T>>,
 }
 
 struct PushSide<T> {
-    push_lock: Mutex<CondWaiters>,
+    push_lock: Mutex<CondWaitersTmp>,
     not_full: Condvar,
     tail: UnsafeCell<*mut Node<T>>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct CondWaitersTmp(usize);
+
+impl CondWaitersTmp {
+    #[inline]
+    fn enter(&mut self) {
+        self.0 += 1;
+    }
+    #[inline]
+    fn leave(&mut self) {
+        if self.0 > 0 {
+            self.0 -= 1;
+        }
+    }
+    #[inline]
+    fn any(&self) -> bool {
+        self.0 > 0
+    }
 }
 
 //
@@ -57,25 +77,26 @@ pub struct LinkedBQ<T: Send> {
 
 impl<T: Send> LinkedBQ<T> {
     pub fn new(capacity: usize) -> Self {
+        let capacity = ensure_capacity(capacity);
         let dummy_ptr = Box::into_raw(Node::dummy());
         Self {
             capacity,
             count: CachePadded(AtomicUsize::new(0)),
             disposed: CachePadded(AtomicBool::new(false)),
             pop_side: CachePadded(PopSide {
-                pop_lock: Mutex::new(CondWaiters::default()),
+                pop_lock: Mutex::new(CondWaitersTmp::default()),
                 not_empty: Condvar::new(),
                 head: UnsafeCell::new(dummy_ptr),
             }),
             push_side: CachePadded(PushSide {
-                push_lock: Mutex::new(CondWaiters::default()),
+                push_lock: Mutex::new(CondWaitersTmp::default()),
                 not_full: Condvar::new(),
                 tail: UnsafeCell::new(dummy_ptr),
             }),
         }
     }
 
-    unsafe fn en_q(&self, item: Box<Node<T>>, push_lock_g: MutexGuard<'_, CondWaiters>) {
+    unsafe fn en_q(&self, item: Box<Node<T>>, push_lock_g: MutexGuard<'_, CondWaitersTmp>) {
         let pp_old_tail = self.push_side.tail.get();
         let p_new_tail = Box::into_raw(item);
 
@@ -94,7 +115,7 @@ impl<T: Send> LinkedBQ<T> {
         // was empty (empty -> 1), notify pop waiters);
         drop(push_lock_g);
         if prev_count == 0 {
-            let pop_lock_g: MutexGuard<'_, CondWaiters> = self
+            let pop_lock_g: MutexGuard<'_, CondWaitersTmp> = self
                 .pop_side
                 .pop_lock
                 .lock()
@@ -105,7 +126,7 @@ impl<T: Send> LinkedBQ<T> {
         }
     }
 
-    unsafe fn de_q(&self, pop_lock_g: MutexGuard<'_, CondWaiters>) -> Result<T, HioLastError> {
+    unsafe fn de_q(&self, pop_lock_g: MutexGuard<'_, CondWaitersTmp>) -> Result<T, HioLastError> {
         let pp_old_head = self.pop_side.head.get();
         let item: T;
         unsafe {

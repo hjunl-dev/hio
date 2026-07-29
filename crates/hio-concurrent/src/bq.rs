@@ -3,7 +3,10 @@ mod linked_bq;
 mod lock_free_sync_q;
 
 use hio_core::HioLastError;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 // todo: need to fix align for different architectures, currently only works for x86_64
 #[repr(align(128))]
@@ -22,24 +25,45 @@ impl<T> std::ops::Deref for CachePadded<T> {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-struct CondWaiters(usize);
+#[derive(Debug)]
+struct WaiterGuard<'a>(&'a AtomicUsize);
+
+impl Drop for WaiterGuard<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+#[derive(Debug, Default)]
+struct CondWaiters(AtomicUsize);
 
 impl CondWaiters {
     #[inline]
-    fn enter(&mut self) {
-        self.0 += 1;
+    pub const fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn enter(&self) -> WaiterGuard<'_> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        WaiterGuard(&self.0)
     }
     #[inline]
-    fn leave(&mut self) {
-        if self.0 > 0 {
-            self.0 -= 1;
-        }
+    pub fn any(&self) -> bool {
+        self.0.load(Ordering::Relaxed) > 0
     }
     #[inline]
-    fn any(&self) -> bool {
-        self.0 > 0
+    pub fn count(&self) -> usize {
+        self.0.load(Ordering::Relaxed)
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Signals {
+    signal_not_empty: bool,
+    signal_not_full: bool,
 }
 
 //
@@ -68,7 +92,6 @@ fn ensure_capacity(capacity: usize) -> usize {
 }
 
 pub fn create_bq<T: Send + 'static>(bq_type: BQType, capacity: usize) -> Arc<dyn BQ<T>> {
-    let capacity = ensure_capacity(capacity);
     match bq_type {
         BQType::Array => Arc::new(array_bq::ArrayBQ::new(capacity)),
         BQType::Linked => Arc::new(linked_bq::LinkedBQ::new(capacity)),
