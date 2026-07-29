@@ -22,7 +22,8 @@ pub enum HioLastError {
     InvalidOperation = 1002,
     ResourceUnavailable = 1003,
     Timeout = 1004,
-    MutexPoisoned = 1005,
+    WouldBlock = 1005,
+    MutexPoisoned = 1006,
 }
 
 thread_local! {

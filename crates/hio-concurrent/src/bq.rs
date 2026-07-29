@@ -3,9 +3,12 @@ mod linked_bq;
 mod lock_free_sync_q;
 
 use hio_core::HioLastError;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
 };
 
 // todo: need to fix align for different architectures, currently only works for x86_64
@@ -79,8 +82,16 @@ pub enum BQType {
 }
 
 pub trait BQ<T: Send>: Send + Sync {
-    fn push(&self, item: T) -> Result<(), HioLastError>;
+    // push
+    fn push(&self, item: T) -> Result<(), (HioLastError, T)>;
+    fn try_push(&self, item: T) -> Result<(), (HioLastError, T)>;
+    fn push_timeout(&self, item: T, timeout: Duration) -> Result<(), (HioLastError, T)>;
+    // pop
     fn pop(&self) -> Result<T, HioLastError>;
+    fn try_pop(&self) -> Result<T, HioLastError>;
+    fn pop_timeout(&self, timeout: Duration) -> Result<T, HioLastError>;
+    // misc
+    fn drain(&self) -> Vec<T>;
     fn dispose(&self);
     fn size(&self) -> usize;
     fn capacity(&self) -> usize;

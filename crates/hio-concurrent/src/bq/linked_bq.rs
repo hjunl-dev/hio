@@ -4,6 +4,7 @@ use std::{
         Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use hio_core::HioLastError;
@@ -180,7 +181,7 @@ impl<T: Send> LinkedBQ<T> {
 }
 
 impl<T: Send> BQ<T> for LinkedBQ<T> {
-    fn push(&self, item: T) -> Result<(), HioLastError> {
+    fn push(&self, item: T) -> Result<(), (HioLastError, T)> {
         if let Ok(mut g) = self.push_side.push_lock.lock() {
             g.enter();
 
@@ -192,7 +193,7 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
                 Ok(mut g) => {
                     g.leave();
                     if self.is_disposed() {
-                        return Err(HioLastError::ResourceUnavailable);
+                        return Err((HioLastError::ResourceUnavailable, item));
                     }
                     unsafe {
                         self.en_q(Node::new(Some(item)), g);
@@ -201,11 +202,19 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
                 }
                 Err(e) => {
                     e.into_inner().leave();
-                    return Err(HioLastError::MutexPoisoned);
+                    return Err((HioLastError::MutexPoisoned, item));
                 }
             }
         }
-        Err(HioLastError::MutexPoisoned)
+        Err((HioLastError::MutexPoisoned, item))
+    }
+
+    fn try_push(&self, item: T) -> Result<(), (HioLastError, T)> {
+        todo!()
+    }
+
+    fn push_timeout(&self, item: T, timeout: Duration) -> Result<(), (HioLastError, T)> {
+        todo!()
     }
 
     fn pop(&self) -> Result<T, HioLastError> {
@@ -233,6 +242,18 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
             }
         }
         Err(HioLastError::MutexPoisoned)
+    }
+
+    fn try_pop(&self) -> Result<T, HioLastError> {
+        todo!()
+    }
+
+    fn pop_timeout(&self, timeout: Duration) -> Result<T, HioLastError> {
+        todo!()
+    }
+
+    fn drain(&self) -> Vec<T> {
+        todo!()
     }
 
     fn dispose(&self) {
@@ -288,6 +309,10 @@ impl<T: Send> Drop for LinkedBQ<T> {
 unsafe impl<T: Send> Send for LinkedBQ<T> {}
 unsafe impl<T: Send> Sync for LinkedBQ<T> {}
 
+//
+// Tests for LinkedBQ
+//
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +323,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    #[derive(Debug)]
     struct DropCounter {
         counter: Arc<AtomicUsize>,
     }
@@ -352,11 +378,17 @@ mod tests {
         });
 
         thread::sleep(Duration::from_millis(50));
-        assert!(!progressed.load(Ordering::SeqCst), "push가 블로킹되지 않음");
+        assert!(
+            !progressed.load(Ordering::SeqCst),
+            "push did not block on a full queue"
+        );
 
         assert_eq!(q.pop().unwrap(), 10);
         h.join().unwrap();
-        assert!(progressed.load(Ordering::SeqCst));
+        assert!(
+            progressed.load(Ordering::SeqCst),
+            "blocked push was not resumed after a pop freed capacity"
+        );
         assert_eq!(q.pop().unwrap(), 20);
     }
 
@@ -384,14 +416,23 @@ mod tests {
         assert_eq!(q.pop().unwrap(), 1);
         assert_eq!(q.pop().unwrap(), 2);
         assert_eq!(q.pop().unwrap(), 3);
-        assert!(matches!(q.pop(), Err(HioLastError::ResourceUnavailable)));
+        assert!(
+            matches!(q.pop(), Err(HioLastError::ResourceUnavailable)),
+            "pop on a drained, disposed queue must fail"
+        );
     }
 
     #[test]
     fn push_fails_after_dispose() {
         let q = LinkedBQ::<i32>::new(4);
         q.dispose();
-        assert!(matches!(q.push(1), Err(HioLastError::ResourceUnavailable)));
+
+        let (err, item) = q.push(1).expect_err("push must fail after dispose");
+        assert!(
+            matches!(err, HioLastError::ResourceUnavailable),
+            "unexpected error kind: {err:?}"
+        );
+        assert_eq!(item, 1, "failed push must return the original item");
     }
 
     #[test]
@@ -403,10 +444,10 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         q.dispose();
 
-        assert!(matches!(
-            h.join().unwrap(),
-            Err(HioLastError::ResourceUnavailable)
-        ));
+        assert!(
+            matches!(h.join().unwrap(), Err(HioLastError::ResourceUnavailable)),
+            "dispose must wake a blocked pop with ResourceUnavailable"
+        );
     }
 
     #[test]
@@ -419,10 +460,80 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         q.dispose();
 
-        assert!(matches!(
-            h.join().unwrap(),
-            Err(HioLastError::ResourceUnavailable)
-        ));
+        let res = h.join().unwrap();
+        assert!(
+            matches!(res, Err((HioLastError::ResourceUnavailable, 2))),
+            "a push woken by dispose must return the error together with its item"
+        );
+    }
+
+    #[test]
+    fn failed_push_returns_item_without_dropping() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        {
+            let q = LinkedBQ::<DropCounter>::new(4);
+            q.dispose();
+
+            let (err, returned) = q
+                .push(DropCounter::new(&counter))
+                .expect_err("push must fail after dispose");
+
+            assert!(
+                matches!(err, HioLastError::ResourceUnavailable),
+                "unexpected error kind: {err:?}"
+            );
+            assert_eq!(
+                counter.load(Ordering::SeqCst),
+                0,
+                "failed push dropped the item instead of returning it"
+            );
+
+            drop(returned);
+            assert_eq!(
+                counter.load(Ordering::SeqCst),
+                1,
+                "returned item was not dropped exactly once"
+            );
+        }
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "double free or leak after queue drop"
+        );
+    }
+
+    #[test]
+    fn failed_push_on_blocked_path_returns_item() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let q = Arc::new(LinkedBQ::<DropCounter>::new(1));
+        q.push(DropCounter::new(&counter)).unwrap();
+
+        let (q2, c2) = (q.clone(), counter.clone());
+        let h = thread::spawn(move || q2.push(DropCounter::new(&c2)));
+
+        thread::sleep(Duration::from_millis(50));
+        q.dispose();
+
+        let (err, returned) = h
+            .join()
+            .unwrap()
+            .expect_err("a push woken by dispose must fail");
+        assert!(
+            matches!(err, HioLastError::ResourceUnavailable),
+            "unexpected error kind: {err:?}"
+        );
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            0,
+            "item was lost on the blocking push path"
+        );
+
+        drop(returned);
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "returned item was not dropped exactly once"
+        );
     }
 
     #[test]
@@ -473,12 +584,12 @@ mod tests {
         assert_eq!(
             cnt.load(Ordering::Relaxed),
             TOTAL,
-            "소비 개수 불일치(유실/중복)"
+            "consumed count mismatch (item loss or duplication)"
         );
         assert_eq!(
             sum.load(Ordering::Relaxed),
             EXPECTED_SUM,
-            "합 불일치(유실/중복)"
+            "checksum mismatch (item loss or duplication)"
         );
     }
 
@@ -504,7 +615,11 @@ mod tests {
                 drop(q.pop().unwrap());
             }
         }
-        assert_eq!(counter.load(Ordering::SeqCst), 8, "누수 또는 이중해제");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            8,
+            "leak or double free after a full drain"
+        );
     }
 
     #[test]
@@ -516,7 +631,11 @@ mod tests {
                 q.push(DropCounter::new(&counter)).unwrap();
             }
         }
-        assert_eq!(counter.load(Ordering::SeqCst), 8, "미소비 아이템 누수");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            8,
+            "unconsumed items leaked when the queue was dropped"
+        );
     }
 
     #[test]
@@ -535,7 +654,7 @@ mod tests {
         assert_eq!(
             counter.load(Ordering::SeqCst),
             10,
-            "부분 drain 후 총 해제 불일치"
+            "drop count mismatch after dispose with a partial drain"
         );
     }
 }

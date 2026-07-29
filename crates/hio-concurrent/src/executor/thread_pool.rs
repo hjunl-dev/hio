@@ -58,7 +58,7 @@ impl ThreadPool {
 
 impl Executor for ThreadPool {
     fn submit(&self, job: Job) -> Result<(), HioLastError> {
-        self.job_queue.push(job)
+        self.job_queue.push(job).map_err(|(e, _item)| e)
     }
 
     fn worker_count(&self) -> usize {
