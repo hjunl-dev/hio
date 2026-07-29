@@ -59,7 +59,7 @@ impl<T: Send> ArrayBQ<T> {
 
     #[inline]
     fn is_full(&self, buf: &VecDeque<T>) -> bool {
-        buf.len() > self.capacity
+        buf.len() >= self.capacity
     }
 
     fn en_q(&self, item: T, buf: &mut VecDeque<T>) -> Signals {
@@ -68,7 +68,7 @@ impl<T: Send> ArrayBQ<T> {
         Signals {
             // was empty, notify pop waiters
             signal_not_empty: prev == 0 && self.pop_waiters.any(),
-            // cascade notify push waiters if queue is not full
+            // still not-full after push, cadade to next producer
             signal_not_full: prev + 1 < self.capacity && self.push_waiters.any(),
         }
     }
@@ -77,9 +77,9 @@ impl<T: Send> ArrayBQ<T> {
         let prev = buf.len();
         let item = buf.pop_front();
         let s = Signals {
-            // was empty, notify pop waiters
+            // still non-empty after pop, cascade to next consumer
             signal_not_empty: prev > 1 && self.pop_waiters.any(),
-            // cascade notify push waiters if queue is not full
+            // was full, notify push waiters
             signal_not_full: prev == self.capacity && self.push_waiters.any(),
         };
         (item, s)
@@ -100,6 +100,7 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
         if self.is_disposed() {
             return Err(HioLastError::ResourceUnavailable);
         }
+
         let s = self.en_q(item, &mut g);
         drop(g);
         self.signal(s);
@@ -120,6 +121,7 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
             debug_assert!(self.is_disposed());
             return Err(HioLastError::ResourceUnavailable);
         }
+
         let (item, sig) = self.de_q(&mut g);
         drop(g);
         self.signal(sig);
@@ -129,7 +131,7 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
     fn dispose(&self) {
         if self
             .disposed
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
             {
