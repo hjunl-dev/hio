@@ -4,6 +4,7 @@ use std::{
         Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use crate::bq::{BQ, CondWaiters, Signals, ensure_capacity};
@@ -62,27 +63,31 @@ impl<T: Send> ArrayBQ<T> {
         buf.len() >= self.capacity
     }
 
-    fn en_q(&self, item: T, buf: &mut VecDeque<T>) -> Signals {
-        let prev = buf.len();
-        buf.push_back(item);
-        Signals {
+    fn en_q_commit(&self, item: T, mut g: MutexGuard<'_, VecDeque<T>>) {
+        let prev = g.len();
+        g.push_back(item);
+        let s = Signals {
             // was empty, notify pop waiters
             signal_not_empty: prev == 0 && self.pop_waiters.any(),
             // still not-full after push, cadade to next producer
             signal_not_full: prev + 1 < self.capacity && self.push_waiters.any(),
-        }
+        };
+        drop(g);
+        self.signal(s);
     }
 
-    fn de_q(&self, buf: &mut VecDeque<T>) -> (Option<T>, Signals) {
-        let prev = buf.len();
-        let item = buf.pop_front();
+    fn de_q_commit(&self, mut g: MutexGuard<'_, VecDeque<T>>) -> T {
+        let prev = g.len();
+        let item = g.pop_front().expect("caller guarantees non-empty");
         let s = Signals {
             // still non-empty after pop, cascade to next consumer
             signal_not_empty: prev > 1 && self.pop_waiters.any(),
             // was full, notify push waiters
             signal_not_full: prev == self.capacity && self.push_waiters.any(),
         };
-        (item, s)
+        drop(g);
+        self.signal(s);
+        item
     }
 }
 
@@ -94,35 +99,63 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
             let _wg = self.push_waiters.enter();
             g = self
                 .not_full
-                .wait_while(g, |g| !self.is_disposed() && self.is_full(&g))
+                .wait_while(g, |buf| !self.is_disposed() && self.is_full(&buf))
                 .unwrap_or_else(PoisonError::into_inner);
         }
         if self.is_disposed() {
             return Err((HioLastError::ResourceUnavailable, item));
         }
-
-        let s = self.en_q(item, &mut g);
-        drop(g);
-        self.signal(s);
+        // enqueue & drop guard
+        self.en_q_commit(item, g);
         Ok(())
     }
 
     fn try_push(&self, item: T) -> Result<(), (HioLastError, T)> {
-        todo!()
+        let g = self.lock();
+
+        if self.is_disposed() {
+            return Err((HioLastError::ResourceUnavailable, item));
+        }
+        if self.is_full(&g) {
+            return Err((HioLastError::WouldBlock, item));
+        }
+        // enqueue & drop guard
+        self.en_q_commit(item, g);
+        Ok(())
     }
 
-    fn push_timeout(&self, item: T, timeout: std::time::Duration) -> Result<(), (HioLastError, T)> {
-        todo!()
+    fn push_timeout(&self, item: T, dur: Duration) -> Result<(), (HioLastError, T)> {
+        let mut g = self.lock();
+        let mut timed_out = false;
+
+        if !self.is_disposed() && self.is_full(&g) {
+            let _wg = self.push_waiters.enter();
+            let (guard, timeout_result) = self
+                .not_full
+                .wait_timeout_while(g, dur, |buf| !self.is_disposed() && self.is_full(&buf))
+                .unwrap_or_else(PoisonError::into_inner);
+            g = guard;
+            timed_out = timeout_result.timed_out();
+        }
+        if timed_out {
+            return Err((HioLastError::Timeout, item));
+        }
+        if self.is_disposed() {
+            return Err((HioLastError::ResourceUnavailable, item));
+        }
+        // enqueue & drop guard
+        self.en_q_commit(item, g);
+        Ok(())
     }
 
     fn pop(&self) -> Result<T, HioLastError> {
         let mut g = self.lock();
 
         if !self.is_disposed() && g.is_empty() {
-            let _w = self.pop_waiters.enter();
+            let _wg = self.pop_waiters.enter();
             g = self
                 .not_empty
-                .wait_while(g, |b| !self.is_disposed() && b.is_empty())
+                .wait_while(g, |buf| !self.is_disposed() && buf.is_empty())
                 .unwrap_or_else(PoisonError::into_inner);
         }
         if g.is_empty() {
@@ -130,22 +163,61 @@ impl<T: Send> BQ<T> for ArrayBQ<T> {
             return Err(HioLastError::ResourceUnavailable);
         }
 
-        let (item, sig) = self.de_q(&mut g);
-        drop(g);
-        self.signal(sig);
-        Ok(item.unwrap())
+        let item = self.de_q_commit(g);
+        Ok(item)
     }
 
     fn try_pop(&self) -> Result<T, HioLastError> {
-        todo!()
+        let g = self.lock();
+
+        if g.is_empty() {
+            let err = if self.is_disposed() {
+                HioLastError::ResourceUnavailable
+            } else {
+                HioLastError::WouldBlock
+            };
+            return Err(err);
+        }
+
+        let item = self.de_q_commit(g);
+        Ok(item)
     }
 
-    fn pop_timeout(&self, timeout: std::time::Duration) -> Result<T, HioLastError> {
-        todo!()
+    fn pop_timeout(&self, dur: Duration) -> Result<T, HioLastError> {
+        let mut g = self.lock();
+        let mut timed_out = false;
+
+        if !self.is_disposed() && g.is_empty() {
+            let _wg = self.pop_waiters.enter();
+            let (guard, timeout_result) = self
+                .not_empty
+                .wait_timeout_while(g, dur, |buf| !self.is_disposed() && buf.is_empty())
+                .unwrap_or_else(PoisonError::into_inner);
+            g = guard;
+            timed_out = timeout_result.timed_out();
+        }
+        if timed_out {
+            return Err(HioLastError::Timeout);
+        }
+        if self.is_disposed() && g.is_empty() {
+            return Err(HioLastError::ResourceUnavailable);
+        }
+
+        let item = self.de_q_commit(g);
+        Ok(item)
     }
 
     fn drain(&self) -> Vec<T> {
-        todo!()
+        let mut g = self.lock();
+        let had = g.len();
+        let items = g.drain(..).collect();
+        let wake_producers = had > 0 && self.push_waiters.any();
+        drop(g);
+
+        if wake_producers {
+            self.not_full.notify_all();
+        }
+        items
     }
 
     fn dispose(&self) {

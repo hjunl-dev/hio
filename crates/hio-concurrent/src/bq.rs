@@ -85,11 +85,11 @@ pub trait BQ<T: Send>: Send + Sync {
     // push
     fn push(&self, item: T) -> Result<(), (HioLastError, T)>;
     fn try_push(&self, item: T) -> Result<(), (HioLastError, T)>;
-    fn push_timeout(&self, item: T, timeout: Duration) -> Result<(), (HioLastError, T)>;
+    fn push_timeout(&self, item: T, dur: Duration) -> Result<(), (HioLastError, T)>;
     // pop
     fn pop(&self) -> Result<T, HioLastError>;
     fn try_pop(&self) -> Result<T, HioLastError>;
-    fn pop_timeout(&self, timeout: Duration) -> Result<T, HioLastError>;
+    fn pop_timeout(&self, dur: Duration) -> Result<T, HioLastError>;
     // misc
     fn drain(&self) -> Vec<T>;
     fn dispose(&self);
