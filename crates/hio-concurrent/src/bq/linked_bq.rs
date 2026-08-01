@@ -210,11 +210,60 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
     }
 
     fn try_push(&self, item: T) -> Result<(), (HioLastError, T)> {
-        todo!()
+        if self.is_disposed() {
+            return Err((HioLastError::ResourceUnavailable, item));
+        }
+
+        let Ok(g) = self.push_side.push_lock.lock() else {
+            return Err((HioLastError::MutexPoisoned, item));
+        };
+
+        if self.is_disposed() {
+            return Err((HioLastError::ResourceUnavailable, item));
+        }
+        if self.is_full() {
+            return Err((HioLastError::WouldBlock, item));
+        }
+
+        unsafe {
+            self.en_q(Node::new(Some(item)), g);
+        }
+        Ok(())
     }
 
     fn push_timeout(&self, item: T, timeout: Duration) -> Result<(), (HioLastError, T)> {
-        todo!()
+        let Ok(mut g) = self.push_side.push_lock.lock() else {
+            return Err((HioLastError::MutexPoisoned, item));
+        };
+
+        g.enter();
+        match self
+            .push_side
+            .not_full
+            .wait_timeout_while(g, timeout, |_g| !self.is_disposed() && self.is_full())
+        {
+            Ok((mut g, _res)) => {
+                g.leave();
+
+                if self.is_disposed() {
+                    return Err((HioLastError::ResourceUnavailable, item));
+                }
+                // _res.timed_out() 대신 실제 상태로 판정 (아래 설명)
+                if self.is_full() {
+                    return Err((HioLastError::Timeout, item));
+                }
+
+                unsafe {
+                    self.en_q(Node::new(Some(item)), g);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                let (mut g, _res) = e.into_inner();
+                g.leave();
+                Err((HioLastError::MutexPoisoned, item))
+            }
+        }
     }
 
     fn pop(&self) -> Result<T, HioLastError> {
@@ -245,15 +294,65 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
     }
 
     fn try_pop(&self) -> Result<T, HioLastError> {
-        todo!()
+        let Ok(g) = self.pop_side.pop_lock.lock() else {
+            return Err(HioLastError::MutexPoisoned);
+        };
+
+        if self.is_empty() {
+            return Err(if self.is_disposed() {
+                HioLastError::ResourceUnavailable
+            } else {
+                HioLastError::WouldBlock
+            });
+        }
+
+        unsafe { self.de_q(g) }
     }
 
     fn pop_timeout(&self, timeout: Duration) -> Result<T, HioLastError> {
-        todo!()
+        let Ok(mut g) = self.pop_side.pop_lock.lock() else {
+            return Err(HioLastError::MutexPoisoned);
+        };
+
+        g.enter();
+
+        match self
+            .pop_side
+            .not_empty
+            .wait_timeout_while(g, timeout, |_g| !self.is_disposed() && self.is_empty())
+        {
+            Ok((mut g, _res)) => {
+                g.leave();
+
+                if self.is_empty() {
+                    return Err(if self.is_disposed() {
+                        HioLastError::ResourceUnavailable
+                    } else {
+                        HioLastError::Timeout
+                    });
+                }
+
+                unsafe { self.de_q(g) }
+            }
+            Err(e) => {
+                let (mut g, _res) = e.into_inner();
+                g.leave();
+                Err(HioLastError::MutexPoisoned)
+            }
+        }
     }
 
     fn drain(&self) -> Vec<T> {
-        todo!()
+        let n = self.count.load(Ordering::Acquire);
+        let mut out = Vec::with_capacity(n);
+
+        for _ in 0..n {
+            match self.try_pop() {
+                Ok(item) => out.push(item),
+                Err(_) => break,
+            }
+        }
+        out
     }
 
     fn dispose(&self) {
