@@ -1,7 +1,7 @@
 use std::{
     cell::UnsafeCell,
     sync::{
-        Condvar, Mutex, MutexGuard,
+        Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -9,7 +9,7 @@ use std::{
 
 use hio_core::HioLastError;
 
-use crate::bq::{BQ, CachePadded, ensure_capacity};
+use crate::bq::{BQ, CachePadded, CondWaiters, ensure_capacity};
 
 //
 // Primitive for building Linked Blocking Queue
@@ -33,35 +33,17 @@ impl<T> Node<T> {
 }
 
 struct PopSide<T> {
-    pop_lock: Mutex<CondWaitersTmp>,
+    lock: Mutex<()>,
     not_empty: Condvar,
+    waiters: CondWaiters,
     head: UnsafeCell<*mut Node<T>>,
 }
 
 struct PushSide<T> {
-    push_lock: Mutex<CondWaitersTmp>,
+    lock: Mutex<()>,
     not_full: Condvar,
+    waiters: CondWaiters,
     tail: UnsafeCell<*mut Node<T>>,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-struct CondWaitersTmp(usize);
-
-impl CondWaitersTmp {
-    #[inline]
-    fn enter(&mut self) {
-        self.0 += 1;
-    }
-    #[inline]
-    fn leave(&mut self) {
-        if self.0 > 0 {
-            self.0 -= 1;
-        }
-    }
-    #[inline]
-    fn any(&self) -> bool {
-        self.0 > 0
-    }
 }
 
 //
@@ -85,88 +67,34 @@ impl<T: Send> LinkedBQ<T> {
             count: CachePadded(AtomicUsize::new(0)),
             disposed: CachePadded(AtomicBool::new(false)),
             pop_side: CachePadded(PopSide {
-                pop_lock: Mutex::new(CondWaitersTmp::default()),
+                lock: Mutex::new(()),
                 not_empty: Condvar::new(),
+                waiters: CondWaiters::new(),
                 head: UnsafeCell::new(dummy_ptr),
             }),
             push_side: CachePadded(PushSide {
-                push_lock: Mutex::new(CondWaitersTmp::default()),
+                lock: Mutex::new(()),
                 not_full: Condvar::new(),
+                waiters: CondWaiters::new(),
                 tail: UnsafeCell::new(dummy_ptr),
             }),
         }
     }
 
-    unsafe fn en_q(&self, item: Box<Node<T>>, push_lock_g: MutexGuard<'_, CondWaitersTmp>) {
-        let pp_old_tail = self.push_side.tail.get();
-        let p_new_tail = Box::into_raw(item);
-
-        unsafe {
-            // Link the new node to the end of the queue
-            (**pp_old_tail).next = p_new_tail;
-            // Update the tail pointer to point to the new node
-            (*pp_old_tail) = p_new_tail;
-        }
-
-        let prev_count = self.count.fetch_add(1, Ordering::Release);
-        // cascade notify push waiters if queue is not full
-        if prev_count + 1 < self.capacity && push_lock_g.any() {
-            self.push_side.not_full.notify_one();
-        }
-        // was empty (empty -> 1), notify pop waiters);
-        drop(push_lock_g);
-        if prev_count == 0 {
-            let pop_lock_g: MutexGuard<'_, CondWaitersTmp> = self
-                .pop_side
-                .pop_lock
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if pop_lock_g.any() {
-                self.pop_side.not_empty.notify_one();
-            }
-        }
+    #[inline]
+    fn lock_push(&self) -> MutexGuard<'_, ()> {
+        self.push_side
+            .lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
-    unsafe fn de_q(&self, pop_lock_g: MutexGuard<'_, CondWaitersTmp>) -> Result<T, HioLastError> {
-        let pp_old_head = self.pop_side.head.get();
-        let item: T;
-        unsafe {
-            let p_new_head = (**pp_old_head).next;
-            if p_new_head.is_null() {
-                // dequeue from an empty queue, which should not happen if used correctly
-                return Err(HioLastError::InvalidOperation);
-            }
-
-            let tmp = (*p_new_head).item.take();
-            if tmp.is_none() {
-                // This should not happen, as the new head should always have an item
-                return Err(HioLastError::InvalidState);
-            }
-            // Move the item out of the node
-            drop(Box::from_raw(*pp_old_head));
-            // Update the head pointer to point to the new head
-            (*pp_old_head) = p_new_head;
-            item = tmp.unwrap();
-        }
-
-        let prev_count = self.count.fetch_sub(1, Ordering::Release);
-        // cascade notify push waiters if queue is not full
-        if prev_count > 1 && pop_lock_g.any() {
-            self.pop_side.not_empty.notify_one();
-        }
-        // was full (full -> not full), notify push waiters
-        drop(pop_lock_g);
-        if prev_count == self.capacity {
-            let push_lock_g = self
-                .push_side
-                .push_lock
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if push_lock_g.any() {
-                self.push_side.not_full.notify_one();
-            }
-        }
-        Ok(item)
+    #[inline]
+    fn lock_pop(&self) -> MutexGuard<'_, ()> {
+        self.pop_side
+            .lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     #[inline]
@@ -176,47 +104,100 @@ impl<T: Send> LinkedBQ<T> {
 
     #[inline]
     fn is_full(&self) -> bool {
-        self.count.load(Ordering::Acquire) == self.capacity
+        self.count.load(Ordering::Acquire) >= self.capacity
+    }
+
+    fn signal_not_empty(&self) {
+        let _g = self.lock_pop();
+        if self.pop_side.waiters.any() {
+            self.pop_side.not_empty.notify_one();
+        }
+    }
+
+    fn signal_not_full(&self) {
+        let _g = self.lock_push();
+        if self.push_side.waiters.any() {
+            self.push_side.not_full.notify_one();
+        }
+    }
+
+    unsafe fn en_q(&self, node: Box<Node<T>>, g: MutexGuard<'_, ()>) {
+        debug_assert!(self.count.load(Ordering::Relaxed) < self.capacity);
+
+        let pp_tail = self.push_side.tail.get();
+        let p_new_tail = Box::into_raw(node);
+
+        unsafe {
+            (**pp_tail).next = p_new_tail;
+            *pp_tail = p_new_tail;
+        }
+        let prev = self.count.fetch_add(1, Ordering::Release);
+        // still not-full after push, cadade to next producer
+        if prev + 1 < self.capacity && self.push_side.waiters.any() {
+            self.push_side.not_full.notify_one();
+        }
+        drop(g);
+        // was empty, notify pop waiters
+        if prev == 0 {
+            self.signal_not_empty();
+        }
+    }
+
+    unsafe fn unlink_head(&self) -> T {
+        let pp_head = self.pop_side.head.get();
+        unsafe {
+            let p_new_head = (**pp_head).next;
+            debug_assert!(!p_new_head.is_null(), "count > 0 인데 next 가 null 이다");
+
+            let item = (*p_new_head)
+                .item
+                .take()
+                .expect("실노드는 항상 item 을 가진다");
+
+            drop(Box::from_raw(*pp_head));
+            *pp_head = p_new_head;
+            item
+        }
+    }
+
+    unsafe fn de_q(&self, g: MutexGuard<'_, ()>) -> T {
+        let item = unsafe { self.unlink_head() };
+        let prev = self.count.fetch_sub(1, Ordering::Release);
+        // still non-empty after pop, cascade to next consumer
+        if prev > 1 && self.pop_side.waiters.any() {
+            self.pop_side.not_empty.notify_one();
+        }
+        drop(g);
+        // was full, notify push waiters
+        if prev == self.capacity {
+            self.signal_not_full();
+        }
+        item
     }
 }
 
 impl<T: Send> BQ<T> for LinkedBQ<T> {
     fn push(&self, item: T) -> Result<(), (HioLastError, T)> {
-        if let Ok(mut g) = self.push_side.push_lock.lock() {
-            g.enter();
+        let mut g = self.lock_push();
 
-            match self
+        if !self.is_disposed() && self.is_full() {
+            let _wg = self.push_side.waiters.enter();
+            g = self
                 .push_side
                 .not_full
-                .wait_while(g, |_g| !self.is_disposed() && self.is_full())
-            {
-                Ok(mut g) => {
-                    g.leave();
-                    if self.is_disposed() {
-                        return Err((HioLastError::ResourceUnavailable, item));
-                    }
-                    unsafe {
-                        self.en_q(Node::new(Some(item)), g);
-                    }
-                    return Ok(());
-                }
-                Err(e) => {
-                    e.into_inner().leave();
-                    return Err((HioLastError::MutexPoisoned, item));
-                }
-            }
+                .wait_while(g, |_| !self.is_disposed() && self.is_full())
+                .unwrap_or_else(PoisonError::into_inner);
         }
-        Err((HioLastError::MutexPoisoned, item))
-    }
-
-    fn try_push(&self, item: T) -> Result<(), (HioLastError, T)> {
         if self.is_disposed() {
             return Err((HioLastError::ResourceUnavailable, item));
         }
 
-        let Ok(g) = self.push_side.push_lock.lock() else {
-            return Err((HioLastError::MutexPoisoned, item));
-        };
+        unsafe { self.en_q(Node::new(Some(item)), g) };
+        Ok(())
+    }
+
+    fn try_push(&self, item: T) -> Result<(), (HioLastError, T)> {
+        let g = self.lock_push();
 
         if self.is_disposed() {
             return Err((HioLastError::ResourceUnavailable, item));
@@ -225,78 +206,56 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
             return Err((HioLastError::WouldBlock, item));
         }
 
-        unsafe {
-            self.en_q(Node::new(Some(item)), g);
-        }
+        unsafe { self.en_q(Node::new(Some(item)), g) };
         Ok(())
     }
 
-    fn push_timeout(&self, item: T, timeout: Duration) -> Result<(), (HioLastError, T)> {
-        let Ok(mut g) = self.push_side.push_lock.lock() else {
-            return Err((HioLastError::MutexPoisoned, item));
-        };
+    fn push_timeout(&self, item: T, dur: Duration) -> Result<(), (HioLastError, T)> {
+        let mut g = self.lock_push();
+        let mut timed_out = false;
 
-        g.enter();
-        match self
-            .push_side
-            .not_full
-            .wait_timeout_while(g, timeout, |_g| !self.is_disposed() && self.is_full())
-        {
-            Ok((mut g, _res)) => {
-                g.leave();
-
-                if self.is_disposed() {
-                    return Err((HioLastError::ResourceUnavailable, item));
-                }
-                // _res.timed_out() 대신 실제 상태로 판정 (아래 설명)
-                if self.is_full() {
-                    return Err((HioLastError::Timeout, item));
-                }
-
-                unsafe {
-                    self.en_q(Node::new(Some(item)), g);
-                }
-                Ok(())
-            }
-            Err(e) => {
-                let (mut g, _res) = e.into_inner();
-                g.leave();
-                Err((HioLastError::MutexPoisoned, item))
-            }
+        if !self.is_disposed() && self.is_full() {
+            let _wg = self.push_side.waiters.enter();
+            let (guard, timeout_result) = self
+                .push_side
+                .not_full
+                .wait_timeout_while(g, dur, |_| !self.is_disposed() && self.is_full())
+                .unwrap_or_else(PoisonError::into_inner);
+            g = guard;
+            timed_out = timeout_result.timed_out();
         }
+        if timed_out {
+            return Err((HioLastError::Timeout, item));
+        }
+        if self.is_disposed() {
+            return Err((HioLastError::ResourceUnavailable, item));
+        }
+
+        unsafe { self.en_q(Node::new(Some(item)), g) };
+        Ok(())
     }
 
     fn pop(&self) -> Result<T, HioLastError> {
-        if let Ok(mut g) = self.pop_side.pop_lock.lock() {
-            g.enter();
+        let mut g = self.lock_pop();
 
-            match self
+        if !self.is_disposed() && self.is_empty() {
+            let _wg = self.pop_side.waiters.enter();
+            g = self
                 .pop_side
                 .not_empty
-                .wait_while(g, |_g| !self.is_disposed() && self.is_empty())
-            {
-                Ok(mut g) => {
-                    g.leave();
-                    if self.is_disposed() && self.is_empty() {
-                        return Err(HioLastError::ResourceUnavailable);
-                    }
-                    unsafe {
-                        return self.de_q(g);
-                    }
-                }
-                Err(e) => {
-                    e.into_inner().leave();
-                    return Err(HioLastError::MutexPoisoned);
-                }
-            }
+                .wait_while(g, |_| !self.is_disposed() && self.is_empty())
+                .unwrap_or_else(PoisonError::into_inner);
         }
-        Err(HioLastError::MutexPoisoned)
+        if self.is_empty() {
+            debug_assert!(self.is_disposed());
+            return Err(HioLastError::ResourceUnavailable);
+        }
+
+        Ok(unsafe { self.de_q(g) })
     }
 
     fn try_pop(&self) -> Result<T, HioLastError> {
-        let Ok(g) = self.pop_side.pop_lock.lock() else {
-            return Err(HioLastError::MutexPoisoned);
-        };
+        let g = self.lock_pop();
 
         if self.is_empty() {
             return Err(if self.is_disposed() {
@@ -306,50 +265,51 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
             });
         }
 
-        unsafe { self.de_q(g) }
+        Ok(unsafe { self.de_q(g) })
     }
 
-    fn pop_timeout(&self, timeout: Duration) -> Result<T, HioLastError> {
-        let Ok(mut g) = self.pop_side.pop_lock.lock() else {
-            return Err(HioLastError::MutexPoisoned);
-        };
+    fn pop_timeout(&self, dur: Duration) -> Result<T, HioLastError> {
+        let mut g = self.lock_pop();
+        let mut timed_out = false;
 
-        g.enter();
-
-        match self
-            .pop_side
-            .not_empty
-            .wait_timeout_while(g, timeout, |_g| !self.is_disposed() && self.is_empty())
-        {
-            Ok((mut g, _res)) => {
-                g.leave();
-
-                if self.is_empty() {
-                    return Err(if self.is_disposed() {
-                        HioLastError::ResourceUnavailable
-                    } else {
-                        HioLastError::Timeout
-                    });
-                }
-
-                unsafe { self.de_q(g) }
-            }
-            Err(e) => {
-                let (mut g, _res) = e.into_inner();
-                g.leave();
-                Err(HioLastError::MutexPoisoned)
-            }
+        if !self.is_disposed() && self.is_empty() {
+            let _wg = self.pop_side.waiters.enter();
+            let (guard, timeout_result) = self
+                .pop_side
+                .not_empty
+                .wait_timeout_while(g, dur, |_| !self.is_disposed() && self.is_empty())
+                .unwrap_or_else(PoisonError::into_inner);
+            g = guard;
+            timed_out = timeout_result.timed_out();
         }
+        if timed_out {
+            return Err(HioLastError::Timeout);
+        }
+        if self.is_empty() {
+            debug_assert!(self.is_disposed());
+            return Err(HioLastError::ResourceUnavailable);
+        }
+
+        Ok(unsafe { self.de_q(g) })
     }
 
     fn drain(&self) -> Vec<T> {
+        let g = self.lock_pop();
+
         let n = self.count.load(Ordering::Acquire);
         let mut out = Vec::with_capacity(n);
-
         for _ in 0..n {
-            match self.try_pop() {
-                Ok(item) => out.push(item),
-                Err(_) => break,
+            out.push(unsafe { self.unlink_head() });
+        }
+        if n > 0 {
+            self.count.fetch_sub(n, Ordering::Release);
+        }
+        drop(g);
+
+        if n > 0 {
+            let _pg = self.lock_push();
+            if self.push_side.waiters.any() {
+                self.push_side.not_full.notify_all();
             }
         }
         out
@@ -362,19 +322,11 @@ impl<T: Send> BQ<T> for LinkedBQ<T> {
             .is_ok()
         {
             {
-                let _g = self
-                    .pop_side
-                    .pop_lock
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                let _g = self.lock_pop();
                 self.pop_side.not_empty.notify_all();
             }
             {
-                let _g = self
-                    .push_side
-                    .push_lock
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                let _g = self.lock_push();
                 self.push_side.not_full.notify_all();
             }
         }
